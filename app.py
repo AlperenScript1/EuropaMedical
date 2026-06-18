@@ -1,6 +1,8 @@
 import time
+from pathlib import Path
 
 import pyautogui
+from docx_export import docx_olustur
 from selenium import webdriver
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
@@ -33,6 +35,22 @@ for (const row of rows) {
 }
 return null;
 """
+
+ILAN_VERISI_JS = """
+function accordionMetni(id) {
+    const acc = document.getElementById(id);
+    if (!acc) return null;
+    const details = acc.querySelector('[class*="AccordionDetails"]');
+    return (details || acc).innerText.trim();
+}
+
+return {
+    summary: accordionMetni('summary-accordion'),
+    notice: accordionMetni('notice-accordion'),
+};
+"""
+
+VERI_KLASORU = Path(__file__).resolve().parent / "veriler"
 
 
 def cevirildi_mi(driver):
@@ -119,6 +137,39 @@ def sayfayi_asagi_yukari_kaydir(driver):
     driver.execute_script("window.scrollTo(0, 0);")
 
 
+def ilan_verilerini_al(driver, ilan_no):
+    print("[BİLGİ] İlan verileri toplanıyor (header, footer, diller/formatlar hariç)...")
+    veri = driver.execute_script(ILAN_VERISI_JS)
+
+    if not veri or (not veri.get("summary") and not veri.get("notice")):
+        raise RuntimeError("İlan verisi bulunamadı.")
+
+    bolumler = []
+    if veri.get("summary"):
+        bolumler.append("=== ÖZET ===\n" + veri["summary"])
+    if veri.get("notice"):
+        bolumler.append("=== İLAN ===\n" + veri["notice"])
+
+    metin = "\n\n".join(bolumler)
+    VERI_KLASORU.mkdir(exist_ok=True)
+    txt_yolu = VERI_KLASORU / f"{ilan_no}.txt"
+    docx_yolu = VERI_KLASORU / f"{ilan_no}.docx"
+    txt_yolu.write_text(metin, encoding="utf-8")
+
+    docx_olustur(
+        veri.get("summary", ""),
+        veri.get("notice", ""),
+        ilan_no,
+        driver.current_url,
+        docx_yolu,
+    )
+
+    print(f"[OK] Metin kaydedildi: {txt_yolu}")
+    print(f"[OK] Word kaydedildi: {docx_yolu}")
+    print(f"[BİLGİ] Toplam karakter: {len(metin)}")
+    return docx_yolu
+
+
 try:
     arama_kutusu = WebDriverWait(driver, 10).until(
         EC.element_to_be_clickable((By.XPATH, "//input[@id='ted-search-input-text']"))
@@ -183,6 +234,7 @@ try:
 
         sayfayi_turkceye_cevir(driver)
         sayfayi_asagi_yukari_kaydir(driver)
+        ilan_verilerini_al(driver, bulunan_ilan_no)
 
         print("[OK] İşlem tamamlandı. 5 saniye sonra kapanacak.")
         time.sleep(5)
