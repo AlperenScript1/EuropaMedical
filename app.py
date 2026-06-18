@@ -133,6 +133,54 @@ def ilan_verilerini_al(driver, ilan_no):
     return docx_yolu
 
 
+def sonuclara_don(driver):
+    log.bilgi("Arama sonuçlarına dönülüyor...")
+    driver.back()
+    WebDriverWait(driver, 15).until(lambda d: "search/result" in d.current_url)
+    driver.execute_script("window.scrollTo(0, 0);")
+    time.sleep(1)
+
+
+def sonraki_medical_ilan_bul(driver, atlanan_ilanlar):
+    for kaydirma_sayisi in range(40):
+        medical_satir = driver.execute_script(MEDICAL_SATIR_JS, atlanan_ilanlar)
+        if medical_satir:
+            ilan_no = medical_satir.get("noticeNumber")
+            if ilan_no and ilan_kayitli_mi(ilan_no):
+                log.bilgi(f"{ilan_no} daha önce yapılmış, atlanıyor...")
+                atlanan_ilanlar.append(ilan_no)
+                driver.execute_script("window.scrollBy(0, 250);")
+                time.sleep(1)
+                continue
+
+            log.basarili(f"Medical {ilan_no} bulundu.")
+            return ilan_no
+
+        satir_sayisi = len(driver.find_elements(By.XPATH, "//table//tr[td]"))
+        log.bilgi(
+            f"Medical aranıyor... (adım {kaydirma_sayisi + 1}, yüklenen satır: {satir_sayisi})"
+        )
+        driver.execute_script("window.scrollBy(0, 250);")
+        time.sleep(1.5)
+
+    return None
+
+
+def ilana_git(driver, ilan_no):
+    log.bilgi(f"İlan detayına giriliyor: {ilan_no}")
+    ilan_linki = WebDriverWait(driver, 10).until(
+        EC.presence_of_element_located(
+            (By.XPATH, f"//table//tr[td]//a[normalize-space()='{ilan_no}']")
+        )
+    )
+    driver.execute_script(
+        "arguments[0].scrollIntoView({block: 'center'}); arguments[0].click();",
+        ilan_linki,
+    )
+    WebDriverWait(driver, 15).until(lambda d: "/notice/-/detail/" in d.current_url)
+    log.basarili(f"İlan detay sayfası açıldı: {ilan_no}")
+
+
 def main():
     konsol_hazirla()
     url = "https://ted.europa.eu/en/browse-by-business-sector"
@@ -161,63 +209,34 @@ def main():
         log.bilgi("Arama sonuçları bekleniyor...")
 
         WebDriverWait(driver, 15).until(lambda d: "search/result" in d.current_url)
-        log.bilgi("Sonuçlar yükleniyor, sayfa kaydırılıyor...")
+        log.bilgi("Sonuçlar yüklendi, medical ilanlar taranıyor...")
 
-        medical_bulundu = False
-        bulunan_ilan_no = None
         atlanan_ilanlar = []
-        for kaydirma_sayisi in range(40):
-            medical_satir = driver.execute_script(MEDICAL_SATIR_JS, atlanan_ilanlar)
-            if medical_satir:
-                bulunan_ilan_no = medical_satir.get("noticeNumber")
-                if bulunan_ilan_no and ilan_kayitli_mi(bulunan_ilan_no):
-                    log.bilgi(f"{bulunan_ilan_no} daha önce yapılmış, atlanıyor...")
-                    atlanan_ilanlar.append(bulunan_ilan_no)
-                    driver.execute_script("window.scrollBy(0, 250);")
-                    time.sleep(1)
-                    continue
+        kaydedilen_sayisi = 0
 
-                log.basarili(f"Medical {bulunan_ilan_no} bulundu.")
-                medical_bulundu = True
+        while True:
+            bulunan_ilan_no = sonraki_medical_ilan_bul(driver, atlanan_ilanlar)
+            if not bulunan_ilan_no:
+                if kaydedilen_sayisi > 0:
+                    log.basarili(
+                        f"{kaydedilen_sayisi} ilan kaydedildi. Yeni medical ilanı kalmadı."
+                    )
+                elif atlanan_ilanlar:
+                    log.bilgi("Kayıtlı olmayan yeni medical ilanı bulunamadı.")
+                else:
+                    log.hata("Medical içeren ilan bulunamadı.")
                 break
 
-            satir_sayisi = len(driver.find_elements(By.XPATH, "//table//tr[td]"))
-            log.bilgi(
-                f"Medical aranıyor... (adım {kaydirma_sayisi + 1}, yüklenen satır: {satir_sayisi})"
-            )
-            driver.execute_script("window.scrollBy(0, 250);")
-            time.sleep(1.5)
+            ilana_git(driver, bulunan_ilan_no)
+            ilan_verilerini_al(driver, bulunan_ilan_no)
+            atlanan_ilanlar.append(bulunan_ilan_no)
+            kaydedilen_sayisi += 1
 
-        if not medical_bulundu:
-            if atlanan_ilanlar:
-                log.bilgi("Kayıtlı olmayan yeni medical ilanı bulunamadı.")
-            else:
-                log.hata("Medical içeren ilan bulunamadı.")
-            return
+            log.bilgi("Sonraki medical ilan aranıyor...")
+            sonuclara_don(driver)
 
-        if not bulunan_ilan_no:
-            log.hata("Bulunan satırda ilan numarası tespit edilemedi.")
-            return
-
-        log.bilgi(f"İlan detayına giriliyor: {bulunan_ilan_no}")
-        ilan_linki = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located(
-                (By.XPATH, f"//table//tr[td]//a[normalize-space()='{bulunan_ilan_no}']")
-            )
-        )
-        driver.execute_script(
-            "arguments[0].scrollIntoView({block: 'center'}); arguments[0].click();",
-            ilan_linki,
-        )
-
-        WebDriverWait(driver, 15).until(
-            lambda d: "/notice/-/detail/" in d.current_url
-        )
-        log.basarili(f"İlan detay sayfası açıldı: {bulunan_ilan_no}")
-
-        ilan_verilerini_al(driver, bulunan_ilan_no)
-
-        log.basarili("Tüm işlemler başarıyla tamamlandı.")
+        if kaydedilen_sayisi > 0:
+            log.basarili("Tüm işlemler başarıyla tamamlandı.")
 
     except Exception as e:
         son_hata = e
