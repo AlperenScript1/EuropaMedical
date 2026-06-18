@@ -7,11 +7,14 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from terminal_log import TerminalLog, konsol_hazirla
 
 # True: Chrome penceresi açılmaz, sadece terminalde log görünür
 ARKA_PLAN = True
+PROJE_ADI = "Europa_medical_ihaleler"
 
 VERI_KLASORU = Path(__file__).resolve().parent / "veriler"
+log = TerminalLog()
 
 MEDICAL_SATIR_JS = """
 const rows = [...document.querySelectorAll('table tr')].filter(
@@ -46,6 +49,7 @@ return {
 };
 """
 
+
 def tarayici_baslat():
     options = Options()
     options.add_argument("--disable-blink-features=AutomationControlled")
@@ -56,10 +60,10 @@ def tarayici_baslat():
         options.add_argument("--window-size=1920,1080")
         options.add_argument("--disable-gpu")
         options.add_argument("--no-sandbox")
-        print("[BİLGİ] Chrome arka planda (headless) çalışıyor.", flush=True)
+        log.bilgi("Chrome arka planda çalışıyor...")
     else:
         options.add_argument("--start-maximized")
-        print("[BİLGİ] Chrome görünür modda çalışıyor.", flush=True)
+        log.bilgi("Chrome görünür modda çalışıyor...")
 
     driver = webdriver.Chrome(options=options)
     if ARKA_PLAN:
@@ -77,7 +81,7 @@ def cevirildi_mi(driver):
 
 
 def google_ile_turkceye_cevir(driver):
-    print("[BİLGİ] Google çeviri uygulanıyor...", flush=True)
+    log.bilgi("Sayfa Türkçe'ye çevriliyor...")
     driver.execute_script(
         """
         if (!document.getElementById('google_translate_element')) {
@@ -120,16 +124,16 @@ def sayfayi_turkceye_cevir(driver):
     if ARKA_PLAN:
         google_ile_turkceye_cevir(driver)
         if cevirildi_mi(driver):
-            print("[OK] Sayfa Türkçe'ye çevrildi.", flush=True)
+            log.basarili("Sayfa Türkçe'ye çevrildi.")
         else:
-            print("[UYARI] Çeviri uygulandı, doğrulanamadı; devam ediliyor.", flush=True)
+            log.uyari("Çeviri uygulandı, doğrulanamadı; devam ediliyor.")
         return
 
     from selenium.webdriver.common.action_chains import ActionChains
     import pyautogui
 
     pyautogui.FAILSAFE = False
-    print("[BİLGİ] Sayfa içeriğine sağ tıklanıyor...", flush=True)
+    log.bilgi("Sayfa içeriğine sağ tıklanıyor...")
     try:
         hedef = driver.find_element(By.TAG_NAME, "main")
     except Exception:
@@ -138,7 +142,7 @@ def sayfayi_turkceye_cevir(driver):
     ActionChains(driver).move_to_element(hedef).context_click().perform()
     time.sleep(1)
 
-    print("[BİLGİ] Menüden 'Türkçe'ye çevir' seçiliyor...", flush=True)
+    log.bilgi("Menüden 'Türkçe'ye çevir' seçiliyor...")
     for _ in range(9):
         pyautogui.press("down")
         time.sleep(0.1)
@@ -146,27 +150,27 @@ def sayfayi_turkceye_cevir(driver):
     time.sleep(3)
 
     if cevirildi_mi(driver):
-        print("[OK] Sayfa Türkçe'ye çevrildi.", flush=True)
+        log.basarili("Sayfa Türkçe'ye çevrildi.")
         return
 
-    print("[BİLGİ] Sağ tık menüsüyle çeviri algılanamadı, Google çeviri deneniyor...", flush=True)
+    log.uyari("Sağ tık menüsüyle çeviri algılanamadı, Google çeviri deneniyor...")
     google_ile_turkceye_cevir(driver)
     if cevirildi_mi(driver):
-        print("[OK] Sayfa Türkçe'ye çevrildi.", flush=True)
+        log.basarili("Sayfa Türkçe'ye çevrildi.")
     else:
-        print("[UYARI] Çeviri tamamlandı ancak doğrulanamadı, devam ediliyor.", flush=True)
+        log.uyari("Çeviri tamamlandı ancak doğrulanamadı, devam ediliyor.")
 
 
 def sayfayi_asagi_yukari_kaydir(driver):
-    print("[BİLGİ] Sayfa en alta kaydırılıyor...")
+    log.bilgi("Sayfa en alta kaydırılıyor...")
     driver.execute_script("window.scrollTo(0, document.documentElement.scrollHeight);")
     time.sleep(1)
-    print("[BİLGİ] Sayfa en üste geri kaydırılıyor...")
+    log.bilgi("Sayfa en üste geri kaydırılıyor...")
     driver.execute_script("window.scrollTo(0, 0);")
 
 
 def ilan_verilerini_al(driver, ilan_no):
-    print("[BİLGİ] İlan verileri toplanıyor (header, footer, diller/formatlar hariç)...")
+    log.bilgi("İlan verileri toplanıyor...")
     veri = driver.execute_script(ILAN_VERISI_JS)
 
     if not veri or (not veri.get("summary") and not veri.get("notice")):
@@ -184,6 +188,7 @@ def ilan_verilerini_al(driver, ilan_no):
     docx_yolu = VERI_KLASORU / f"{ilan_no}.docx"
     txt_yolu.write_text(metin, encoding="utf-8")
 
+    log.bilgi(f"Word formatına dönüştürülüyor: {ilan_no}")
     docx_olustur(
         veri.get("summary", ""),
         veri.get("notice", ""),
@@ -192,64 +197,65 @@ def ilan_verilerini_al(driver, ilan_no):
         docx_yolu,
     )
 
-    print(f"[OK] Metin kaydedildi: {txt_yolu}")
-    print(f"[OK] Word kaydedildi: {docx_yolu}")
-    print(f"[BİLGİ] Toplam karakter: {len(metin)}")
+    log.basarili(f"Metin kaydedildi: {txt_yolu}")
+    log.basarili(f"Word kaydedildi: {docx_yolu}")
+    log.bilgi(f"Toplam karakter: {len(metin)}")
     return docx_yolu
 
 
-url = "https://ted.europa.eu/en/browse-by-business-sector"
+def main():
+    konsol_hazirla()
+    url = "https://ted.europa.eu/en/browse-by-business-sector"
+    driver = None
+    son_hata = None
 
-try:
-    driver = tarayici_baslat()
-    driver.get(url)
+    try:
+        log.basarili(f"{PROJE_ADI} başlatıldı.")
+        driver = tarayici_baslat()
+        driver.get(url)
 
-    arama_kutusu = WebDriverWait(driver, 10).until(
-        EC.element_to_be_clickable((By.XPATH, "//input[@id='ted-search-input-text']"))
-    )
-    arama_kutusu.click()
-    arama_kutusu.send_keys("medical")
-    print("[OK] Arama kutusuna 'medical' yazıldı.")
-
-    ara_butonu = WebDriverWait(driver, 10).until(
-        EC.element_to_be_clickable((By.XPATH, "(//button[@id='ted-search-submit'])[1]"))
-    )
-    ara_butonu.click()
-    print("[OK] Ara butonuna tıklandı. Sonuçlar bekleniyor...")
-
-    WebDriverWait(driver, 15).until(lambda d: "search/result" in d.current_url)
-    print("[OK] Arama sonuç sayfasına geçildi.")
-
-    print("[BİLGİ] 'Medical' görünene kadar sayfa yavaşça aşağı kaydırılacak...")
-
-    medical_bulundu = False
-    bulunan_ilan_no = None
-    for kaydirma_sayisi in range(40):
-        medical_satir = driver.execute_script(MEDICAL_SATIR_JS)
-        if medical_satir:
-            print(
-                f"[BAŞARILI] 'Medical' ekranda göründü! Kaydırma durduruldu. "
-                f"(Adım: {kaydirma_sayisi + 1})"
-            )
-            print(f"[BİLGİ] Bulunan satır: {medical_satir['rowText']}")
-            bulunan_ilan_no = medical_satir.get("noticeNumber")
-            medical_bulundu = True
-            break
-
-        satir_sayisi = len(driver.find_elements(By.XPATH, "//table//tr[td]"))
-        print(
-            f"-> Henüz ekranda görünmedi, aşağı kaydırılıyor... "
-            f"(Adım {kaydirma_sayisi + 1}, yüklenen satır: {satir_sayisi})"
+        log.bilgi("Medical aranıyor...")
+        arama_kutusu = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.XPATH, "//input[@id='ted-search-input-text']"))
         )
-        driver.execute_script("window.scrollBy(0, 250);")
-        time.sleep(1.5)
+        arama_kutusu.click()
+        arama_kutusu.send_keys("medical")
 
-    if not medical_bulundu:
-        print("[HATA] Sayfa kaydırılmasına rağmen ekranda 'Medical' içeren satır bulunamadı.")
-    elif not bulunan_ilan_no:
-        print("[HATA] Bulunan satırda ilan numarası linki tespit edilemedi.")
-    else:
-        print(f"[BİLGİ] İlan linkine tıklanıyor: {bulunan_ilan_no}")
+        ara_butonu = WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.XPATH, "(//button[@id='ted-search-submit'])[1]"))
+        )
+        ara_butonu.click()
+        log.bilgi("Arama sonuçları bekleniyor...")
+
+        WebDriverWait(driver, 15).until(lambda d: "search/result" in d.current_url)
+        log.bilgi("Sonuçlar yükleniyor, sayfa kaydırılıyor...")
+
+        medical_bulundu = False
+        bulunan_ilan_no = None
+        for kaydirma_sayisi in range(40):
+            medical_satir = driver.execute_script(MEDICAL_SATIR_JS)
+            if medical_satir:
+                bulunan_ilan_no = medical_satir.get("noticeNumber")
+                log.basarili(f"Medical {bulunan_ilan_no} bulundu.")
+                medical_bulundu = True
+                break
+
+            satir_sayisi = len(driver.find_elements(By.XPATH, "//table//tr[td]"))
+            log.bilgi(
+                f"Medical aranıyor... (adım {kaydirma_sayisi + 1}, yüklenen satır: {satir_sayisi})"
+            )
+            driver.execute_script("window.scrollBy(0, 250);")
+            time.sleep(1.5)
+
+        if not medical_bulundu:
+            log.hata("Medical içeren ilan bulunamadı.")
+            return
+
+        if not bulunan_ilan_no:
+            log.hata("Bulunan satırda ilan numarası tespit edilemedi.")
+            return
+
+        log.bilgi(f"İlan detayına giriliyor: {bulunan_ilan_no}")
         ilan_linki = WebDriverWait(driver, 10).until(
             EC.presence_of_element_located(
                 (By.XPATH, f"//table//tr[td]//a[normalize-space()='{bulunan_ilan_no}']")
@@ -263,18 +269,24 @@ try:
         WebDriverWait(driver, 15).until(
             lambda d: "/notice/-/detail/" in d.current_url
         )
-        print(f"[OK] İlan detay sayfasına girildi: {driver.current_url}")
+        log.basarili(f"İlan detay sayfası açıldı: {bulunan_ilan_no}")
 
         sayfayi_turkceye_cevir(driver)
         sayfayi_asagi_yukari_kaydir(driver)
         ilan_verilerini_al(driver, bulunan_ilan_no)
 
-        print("[OK] İşlem tamamlandı.")
+        log.basarili("Tüm işlemler başarıyla tamamlandı.")
 
-except Exception as e:
-    print(f"Bir hata oluştu: {e}", flush=True)
+    except Exception as e:
+        son_hata = e
+        log.hata(f"Beklenmeyen hata: {e}")
 
-finally:
-    if "driver" in locals():
-        driver.quit()
-    print("[BİTTİ] Test sonlandırıldı.", flush=True)
+    finally:
+        if driver is not None:
+            driver.quit()
+        log.hata_kaydet(son_hata)
+        log.basarili(f"{PROJE_ADI} durduruldu.")
+
+
+if __name__ == "__main__":
+    main()
