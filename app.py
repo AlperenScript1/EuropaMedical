@@ -18,6 +18,7 @@ VERI_KLASORU = Path(__file__).resolve().parent / "Europa_medical_ihaleler_Dosyal
 log = TerminalLog()
 
 MEDICAL_SATIR_JS = """
+const atlananlar = arguments[0] || [];
 const rows = [...document.querySelectorAll('table tr')].filter(
     row => row.querySelectorAll('td').length > 0
 );
@@ -28,9 +29,12 @@ for (const row of rows) {
     if (!gorunur) continue;
 
     const link = row.querySelector('a[href*="/notice/-/detail/"]');
+    const noticeNumber = link ? link.textContent.trim() : null;
+    if (noticeNumber && atlananlar.includes(noticeNumber)) continue;
+
     return {
         rowText: row.innerText.trim().slice(0, 150),
-        noticeNumber: link ? link.textContent.trim() : null,
+        noticeNumber: noticeNumber,
     };
 }
 return null;
@@ -72,6 +76,10 @@ def tarayici_baslat():
     else:
         driver.maximize_window()
     return driver
+
+
+def ilan_kayitli_mi(ilan_no: str) -> bool:
+    return (VERI_KLASORU / f"{ilan_no}.docx").exists()
 
 
 def sayfayi_asagi_yukari_kaydir(driver):
@@ -143,10 +151,18 @@ def main():
 
         medical_bulundu = False
         bulunan_ilan_no = None
+        atlanan_ilanlar = []
         for kaydirma_sayisi in range(40):
-            medical_satir = driver.execute_script(MEDICAL_SATIR_JS)
+            medical_satir = driver.execute_script(MEDICAL_SATIR_JS, atlanan_ilanlar)
             if medical_satir:
                 bulunan_ilan_no = medical_satir.get("noticeNumber")
+                if bulunan_ilan_no and ilan_kayitli_mi(bulunan_ilan_no):
+                    log.bilgi(f"{bulunan_ilan_no} daha önce yapılmış, atlanıyor...")
+                    atlanan_ilanlar.append(bulunan_ilan_no)
+                    driver.execute_script("window.scrollBy(0, 250);")
+                    time.sleep(1)
+                    continue
+
                 log.basarili(f"Medical {bulunan_ilan_no} bulundu.")
                 medical_bulundu = True
                 break
@@ -159,7 +175,10 @@ def main():
             time.sleep(1.5)
 
         if not medical_bulundu:
-            log.hata("Medical içeren ilan bulunamadı.")
+            if atlanan_ilanlar:
+                log.bilgi("Kayıtlı olmayan yeni medical ilanı bulunamadı.")
+            else:
+                log.hata("Medical içeren ilan bulunamadı.")
             return
 
         if not bulunan_ilan_no:
