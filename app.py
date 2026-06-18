@@ -1,4 +1,5 @@
 import time
+from datetime import datetime
 from pathlib import Path
 
 from cevir import metin_turkce_mi, metni_turkceye_cevir
@@ -24,9 +25,6 @@ const rows = [...document.querySelectorAll('table tr')].filter(
 );
 for (const row of rows) {
     if (!/medical/i.test(row.innerText)) continue;
-    const rect = row.getBoundingClientRect();
-    const gorunur = rect.top >= 0 && rect.bottom <= window.innerHeight;
-    if (!gorunur) continue;
 
     const link = row.querySelector('a[href*="/notice/-/detail/"]');
     const noticeNumber = link ? link.textContent.trim() : null;
@@ -39,6 +37,10 @@ for (const row of rows) {
 }
 return null;
 """
+
+BASLANGIC_MESAJI = (
+    "Dosyalar günlük klasörlerde biriktirilir. Daha önce alınan ilanlar tekrar yapılmaz."
+)
 
 ILAN_VERISI_JS = """
 function accordionMetni(id) {
@@ -78,8 +80,17 @@ def tarayici_baslat():
     return driver
 
 
+def bugunun_klasoru() -> Path:
+    tarih = datetime.now().strftime("%d.%m.%Y")
+    klasor = VERI_KLASORU / f"{tarih}_Medical_Dosyalari"
+    klasor.mkdir(parents=True, exist_ok=True)
+    return klasor
+
+
 def ilan_kayitli_mi(ilan_no: str) -> bool:
-    return (VERI_KLASORU / f"{ilan_no}.docx").exists()
+    if not VERI_KLASORU.exists():
+        return False
+    return any(VERI_KLASORU.rglob(f"{ilan_no}.docx"))
 
 
 def sayfayi_asagi_yukari_kaydir(driver):
@@ -105,15 +116,15 @@ def ilan_verilerini_al(driver, ilan_no):
         ilan = metni_turkceye_cevir(ilan) if ilan else ilan
     except Exception as e:
         log.hata(f"Çeviri başarısız: {e}")
-        raise
+        raise RuntimeError(f"Çeviri başarısız ({ilan_no})") from e
 
     if metin_turkce_mi(f"{ozet}\n{ilan}"):
         log.basarili("Metin Türkçe'ye çevrildi.")
     else:
         log.uyari("Çeviri tamamlanamadı; Word dosyası İngilizce kaydedilebilir.")
 
-    VERI_KLASORU.mkdir(exist_ok=True)
-    docx_yolu = VERI_KLASORU / f"{ilan_no}.docx"
+    bugun_klasoru = bugunun_klasoru()
+    docx_yolu = bugun_klasoru / f"{ilan_no}.docx"
 
     log.bilgi(f"Word formatına dönüştürülüyor: {ilan_no}")
     docx_olustur(ozet, ilan, ilan_no, driver.current_url, docx_yolu)
@@ -130,6 +141,9 @@ def main():
 
     try:
         log.basarili(f"{PROJE_ADI} başlatıldı.")
+        log.bilgi_mavi(BASLANGIC_MESAJI)
+        bugun = bugunun_klasoru()
+        log.bilgi(f"Bugünün klasörü: {bugun.name}")
         driver = tarayici_baslat()
         driver.get(url)
 

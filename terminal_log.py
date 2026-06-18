@@ -12,6 +12,7 @@ HATA_GUNLUK_KLASORU = Path(__file__).resolve().parent / "hata günlükleri"
 YESIL = Fore.GREEN
 KIRMIZI = Fore.RED
 SARI = Fore.YELLOW
+MAVI = Fore.CYAN
 RESET = Style.RESET_ALL
 
 
@@ -27,6 +28,9 @@ class TerminalLog:
 
     def bilgi(self, mesaj: str) -> None:
         self._ekle("BİLGİ", mesaj, YESIL)
+
+    def bilgi_mavi(self, mesaj: str) -> None:
+        self._ekle("BİLGİ", mesaj, MAVI)
 
     def basarili(self, mesaj: str) -> None:
         self._ekle("OK", mesaj, YESIL)

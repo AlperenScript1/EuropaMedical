@@ -1,4 +1,5 @@
 import re
+import time
 
 from deep_translator import GoogleTranslator
 
@@ -24,24 +25,42 @@ def metin_turkce_mi(metin: str) -> bool:
     return tr_say >= 2 and tr_say > en_say
 
 
+def _metin_parcala(metin: str, max_uzunluk: int = MAX_PARCA) -> list[str]:
+    parcalar = []
+    mevcut = ""
+
+    for satir in metin.splitlines():
+        if len(satir) > max_uzunluk:
+            if mevcut:
+                parcalar.append(mevcut)
+                mevcut = ""
+            for baslangic in range(0, len(satir), max_uzunluk):
+                parcalar.append(satir[baslangic : baslangic + max_uzunluk])
+            continue
+
+        eklenecek = satir if not mevcut else f"\n{satir}"
+        if len(mevcut) + len(eklenecek) > max_uzunluk:
+            parcalar.append(mevcut)
+            mevcut = satir
+        else:
+            mevcut += eklenecek
+
+    if mevcut:
+        parcalar.append(mevcut)
+
+    return parcalar
+
+
 def metni_turkceye_cevir(metin: str) -> str:
     metin = (metin or "").strip()
     if not metin:
         return metin
 
     cevirici = GoogleTranslator(source="auto", target="tr")
-    parcalar = []
-    mevcut = ""
+    cevrilmis = []
 
-    for satir in metin.splitlines():
-        eklenecek = satir if not mevcut else f"\n{satir}"
-        if len(mevcut) + len(eklenecek) > MAX_PARCA:
-            parcalar.append(cevirici.translate(mevcut))
-            mevcut = satir
-        else:
-            mevcut += eklenecek
+    for parca in _metin_parcala(metin):
+        cevrilmis.append(cevirici.translate(parca))
+        time.sleep(0.2)
 
-    if mevcut:
-        parcalar.append(cevirici.translate(mevcut))
-
-    return "\n".join(parcalar)
+    return "\n".join(cevrilmis)
