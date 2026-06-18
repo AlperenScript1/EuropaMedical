@@ -1,21 +1,17 @@
 import time
 from pathlib import Path
 
-import pyautogui
 from docx_export import docx_olustur
 from selenium import webdriver
-from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-pyautogui.FAILSAFE = False
+# True: Chrome penceresi açılmaz, sadece terminalde log görünür
+ARKA_PLAN = True
 
-driver = webdriver.Chrome()
-driver.maximize_window()
-
-url = "https://ted.europa.eu/en/browse-by-business-sector"
-driver.get(url)
+VERI_KLASORU = Path(__file__).resolve().parent / "veriler"
 
 MEDICAL_SATIR_JS = """
 const rows = [...document.querySelectorAll('table tr')].filter(
@@ -50,7 +46,27 @@ return {
 };
 """
 
-VERI_KLASORU = Path(__file__).resolve().parent / "veriler"
+def tarayici_baslat():
+    options = Options()
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("--lang=tr-TR")
+
+    if ARKA_PLAN:
+        options.add_argument("--headless=new")
+        options.add_argument("--window-size=1920,1080")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--no-sandbox")
+        print("[BİLGİ] Chrome arka planda (headless) çalışıyor.", flush=True)
+    else:
+        options.add_argument("--start-maximized")
+        print("[BİLGİ] Chrome görünür modda çalışıyor.", flush=True)
+
+    driver = webdriver.Chrome(options=options)
+    if ARKA_PLAN:
+        driver.set_window_size(1920, 1080)
+    else:
+        driver.maximize_window()
+    return driver
 
 
 def cevirildi_mi(driver):
@@ -61,7 +77,7 @@ def cevirildi_mi(driver):
 
 
 def google_ile_turkceye_cevir(driver):
-    print("[BİLGİ] Yedek yöntemle Google çeviri uygulanıyor...")
+    print("[BİLGİ] Google çeviri uygulanıyor...", flush=True)
     driver.execute_script(
         """
         if (!document.getElementById('google_translate_element')) {
@@ -97,11 +113,23 @@ def google_ile_turkceye_cevir(driver):
         }
         """
     )
-    time.sleep(2)
+    time.sleep(4)
 
 
 def sayfayi_turkceye_cevir(driver):
-    print("[BİLGİ] Sayfa içeriğine sağ tıklanıyor...")
+    if ARKA_PLAN:
+        google_ile_turkceye_cevir(driver)
+        if cevirildi_mi(driver):
+            print("[OK] Sayfa Türkçe'ye çevrildi.", flush=True)
+        else:
+            print("[UYARI] Çeviri uygulandı, doğrulanamadı; devam ediliyor.", flush=True)
+        return
+
+    from selenium.webdriver.common.action_chains import ActionChains
+    import pyautogui
+
+    pyautogui.FAILSAFE = False
+    print("[BİLGİ] Sayfa içeriğine sağ tıklanıyor...", flush=True)
     try:
         hedef = driver.find_element(By.TAG_NAME, "main")
     except Exception:
@@ -110,7 +138,7 @@ def sayfayi_turkceye_cevir(driver):
     ActionChains(driver).move_to_element(hedef).context_click().perform()
     time.sleep(1)
 
-    print("[BİLGİ] Menüden 'Türkçe'ye çevir' seçiliyor...")
+    print("[BİLGİ] Menüden 'Türkçe'ye çevir' seçiliyor...", flush=True)
     for _ in range(9):
         pyautogui.press("down")
         time.sleep(0.1)
@@ -118,15 +146,15 @@ def sayfayi_turkceye_cevir(driver):
     time.sleep(3)
 
     if cevirildi_mi(driver):
-        print("[OK] Sayfa Türkçe'ye çevrildi.")
+        print("[OK] Sayfa Türkçe'ye çevrildi.", flush=True)
         return
 
-    print("[BİLGİ] Sağ tık menüsüyle çeviri algılanamadı, yedek yöntem deneniyor...")
+    print("[BİLGİ] Sağ tık menüsüyle çeviri algılanamadı, Google çeviri deneniyor...", flush=True)
     google_ile_turkceye_cevir(driver)
     if cevirildi_mi(driver):
-        print("[OK] Sayfa Türkçe'ye çevrildi.")
+        print("[OK] Sayfa Türkçe'ye çevrildi.", flush=True)
     else:
-        print("[UYARI] Çeviri tamamlandı ancak doğrulanamadı, devam ediliyor.")
+        print("[UYARI] Çeviri tamamlandı ancak doğrulanamadı, devam ediliyor.", flush=True)
 
 
 def sayfayi_asagi_yukari_kaydir(driver):
@@ -170,7 +198,12 @@ def ilan_verilerini_al(driver, ilan_no):
     return docx_yolu
 
 
+url = "https://ted.europa.eu/en/browse-by-business-sector"
+
 try:
+    driver = tarayici_baslat()
+    driver.get(url)
+
     arama_kutusu = WebDriverWait(driver, 10).until(
         EC.element_to_be_clickable((By.XPATH, "//input[@id='ted-search-input-text']"))
     )
@@ -236,12 +269,12 @@ try:
         sayfayi_asagi_yukari_kaydir(driver)
         ilan_verilerini_al(driver, bulunan_ilan_no)
 
-        print("[OK] İşlem tamamlandı. 5 saniye sonra kapanacak.")
-        time.sleep(5)
+        print("[OK] İşlem tamamlandı.")
 
 except Exception as e:
-    print(f"Bir hata oluştu: {e}")
+    print(f"Bir hata oluştu: {e}", flush=True)
 
 finally:
-    driver.quit()
-    print("[BİTTİ] Test sonlandırıldı.")
+    if "driver" in locals():
+        driver.quit()
+    print("[BİTTİ] Test sonlandırıldı.", flush=True)
