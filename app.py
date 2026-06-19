@@ -390,8 +390,10 @@ def ilan_verilerini_al(driver, ilan_no):
         ozet = metni_turkceye_cevir(ozet) if ozet else ozet
         ilan = metni_turkceye_cevir(ilan) if ilan else ilan
     except Exception as e:
-        log.hata(f"Çeviri başarısız: {e}")
-        raise RuntimeError(f"Çeviri başarısız ({ilan_no})") from e
+        log.uyari(
+            f"Çeviri API hatası ({ilan_no}): {e} "
+            "— Word dosyası orijinal metinle kaydedilecek."
+        )
 
     if metin_turkce_mi(f"{ozet}\n{ilan}"):
         log.basarili("Metin Türkçe'ye çevrildi.")

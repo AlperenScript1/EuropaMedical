@@ -2,8 +2,13 @@ import re
 import time
 
 from deep_translator import GoogleTranslator
+from deep_translator.exceptions import RequestError, TranslationNotFound
 
 MAX_PARCA = 4500
+CEVIRI_DENEME = 3
+CEVIRI_BEKLEME_SN = 1.5
+PARCA_ARASI_BEKLEME_SN = 3
+CEVIRI_PARCA_BEKLEME_SN = 3
 
 TURKCE_ISARETLER = [
     "Alıcı", "Sonuç", "Tedarik", "Başlık", "E-posta", "Süre", "İhale",
@@ -56,11 +61,28 @@ def metni_turkceye_cevir(metin: str) -> str:
     if not metin:
         return metin
 
+    if metin_turkce_mi(metin):
+        return metin
+
     cevirici = GoogleTranslator(source="auto", target="tr")
     cevrilmis = []
 
-    for parca in _metin_parcala(metin):
-        cevrilmis.append(cevirici.translate(parca))
-        time.sleep(0.2)
+    parcalar = _metin_parcala(metin)
+    for parca_no, parca in enumerate(parcalar):
+        if parca_no > 0:
+            time.sleep(CEVIRI_PARCA_BEKLEME_SN)
+
+        son_hata = None
+        for deneme in range(1, CEVIRI_DENEME + 1):
+            try:
+                cevrilmis.append(cevirici.translate(parca))
+                son_hata = None
+                break
+            except (RequestError, TranslationNotFound, Exception) as e:
+                son_hata = e
+                if deneme < CEVIRI_DENEME:
+                    time.sleep(CEVIRI_BEKLEME_SN * deneme)
+        if son_hata is not None:
+            raise son_hata
 
     return "\n".join(cevrilmis)

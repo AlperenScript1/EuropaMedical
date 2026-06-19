@@ -152,18 +152,16 @@ def _ihale_basligi_bul(summary: str, notice: str) -> str:
 
 
 def _alt_baslik_metni(form_turu: str, ihale_basligi: str) -> str:
-    """Form türü (REKABET, SONUÇ vb.) yerine gerçek ihale adını göster."""
-    if not ihale_basligi:
-        return ""
-    form = form_turu.upper().strip()
-    if form in FORM_TURLERI:
-        if any(rekabet in form for rekabet in REKABET_FORM_TURLERI):
-            return ihale_basligi
-        return ""
-    return ihale_basligi
+    """Tablo/cinsi metni üstte tekrar gösterilmez; referans Word şablonunda alt başlık yok."""
+    return ""
 
 
-def _ozet_satirlari(summary: str, form_turu: str, ihale_basligi: str) -> list[str]:
+def _ozet_satirlari(
+    summary: str, notice: str, form_turu: str, ihale_basligi: str
+) -> list[str]:
+    tablo_cinsi_ham = _tablo_cinsi_bul(summary, notice, ihale_basligi)
+    tablo_cinsi, _, _ = _cinsi_miktar_ayir(tablo_cinsi_ham) if tablo_cinsi_ham else ("", "1", "Adet")
+
     satirlar = []
     for ham in summary.splitlines():
         satir = _normalize_satir(ham)
@@ -172,6 +170,10 @@ def _ozet_satirlari(summary: str, form_turu: str, ihale_basligi: str) -> list[st
         if satir.upper() == form_turu.upper():
             continue
         if ihale_basligi and satir.upper() == ihale_basligi.upper():
+            continue
+        if tablo_cinsi and _bas_harf_buyuk(satir).upper() == tablo_cinsi.upper():
+            continue
+        if tablo_cinsi_ham and _bas_harf_buyuk(satir).upper() == tablo_cinsi_ham.upper():
             continue
         if re.fullmatch(r"\d+\.\s+[^:\.]+", satir):
             continue
@@ -300,28 +302,49 @@ def _tablo_cinsi_bul(summary: str, notice: str, ihale_basligi: str) -> str:
     return ""
 
 
+def _cinsi_miktar_ayir(cinsi: str) -> tuple[str, str, str]:
+    """
+    Cinsi sonundaki '- 11 Parça' / '11 Adet' gibi ifadeleri ayırır.
+    Miktar ve birim tablo sütunlarına gider; cinsi sadece ürün/hizmet adını tutar.
+    """
+    for pattern in (
+        r"\s*[-–—]\s*(\d+)\s*(?:Adet|Parça|Parca|Pcs|Pieces?|Units?)\.?\s*$",
+        r"\s+(\d+)\s*(?:Adet|Parça|Parca|Pcs|Pieces?|Units?)\.?\s*$",
+    ):
+        match = re.search(pattern, cinsi, re.IGNORECASE)
+        if match:
+            temiz = cinsi[: match.start()].strip()
+            temiz = re.sub(r"\s*[-–—]\s*$", "", temiz)
+            return _bas_harf_buyuk(temiz), match.group(1), "Adet"
+
+    return _bas_harf_buyuk(cinsi.strip()), "1", "Adet"
+
+
 def _tablo_miktar_birim_bul(summary: str, notice: str) -> tuple[str, str]:
     metin = f"{summary}\n{notice}"
-    adet = re.search(r"(\d+)\s*[Aa]det", metin)
-    if adet:
-        return adet.group(1), "Adet"
 
-    miktar = re.search(
+    for pattern in (
+        r"(\d+)\s*(?:Adet|Parça|Parca)",
         r"(?:Tahmini miktar|Miktar|Estimated quantity)\s*:\s*(\d+)",
-        metin,
-        re.IGNORECASE,
-    )
-    if miktar:
-        return miktar.group(1), "Adet"
+    ):
+        match = re.search(pattern, metin, re.IGNORECASE)
+        if match:
+            return match.group(1), "Adet"
 
     return "1", "Adet"
 
 
 def _tablo_satirlari(summary: str, notice: str, ihale_basligi: str) -> list[tuple[str, str, str, str]]:
-    cinsi = _tablo_cinsi_bul(summary, notice, ihale_basligi)
-    if not cinsi:
+    cinsi_ham = _tablo_cinsi_bul(summary, notice, ihale_basligi)
+    if not cinsi_ham:
         return []
-    miktar, birim = _tablo_miktar_birim_bul(summary, notice)
+
+    cinsi, miktar, birim = _cinsi_miktar_ayir(cinsi_ham)
+    if miktar == "1":
+        govde_miktar, govde_birim = _tablo_miktar_birim_bul(summary, notice)
+        if govde_miktar != "1":
+            miktar, birim = govde_miktar, govde_birim
+
     return [("1", cinsi, miktar, birim)]
 
 
@@ -330,6 +353,7 @@ def _varsayilan_yazi_tipi_ayarla(doc: Document):
     normal.font.name = FONT_ADI
     normal.font.size = FONT_BOYUT
     normal.font.color.rgb = RGBColor(0, 0, 0)
+    normal.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.LEFT
 
 
 def _run_ekle(paragraf, metin: str, kalin: bool = False):
@@ -374,11 +398,20 @@ def _kalin_etiket_mi(etiket: str) -> bool:
     return _tam_kalin_etiket_mi(etiket) or _kismi_kalin_etiket_mi(etiket)
 
 
+def _bos_satir_ekle(doc: Document):
+    paragraf = doc.add_paragraph()
+    paragraf.style = doc.styles["Normal"]
+    paragraf.alignment = WD_ALIGN_PARAGRAPH.LEFT
+
+
 def _paragraf_ekle(doc: Document, satir: str, ortala: bool = False):
     paragraf = doc.add_paragraph()
     paragraf.style = doc.styles["Normal"]
     if ortala:
         paragraf.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        paragraf.paragraph_format.space_after = Pt(6)
+    else:
+        paragraf.alignment = WD_ALIGN_PARAGRAPH.LEFT
 
     if ":" in satir:
         etiket, deger = satir.split(":", 1)
@@ -443,7 +476,7 @@ def docx_olustur(
     ihale_basligi = _ihale_basligi_bul(summary, notice)
     alt_baslik = _alt_baslik_metni(form_turu, ihale_basligi)
 
-    govde_satirlari = _ozet_satirlari(summary, form_turu, ihale_basligi)
+    govde_satirlari = _ozet_satirlari(summary, notice, form_turu, ihale_basligi)
     govde_satirlari.extend(_org_ve_bildirim_satirlari(notice))
     if url:
         govde_satirlari.append(url)
@@ -454,11 +487,11 @@ def docx_olustur(
     _varsayilan_yazi_tipi_ayarla(doc)
 
     _paragraf_ekle(doc, f"YURT DIŞINDAN SATINALMA TALEBİ/ {ulke}", ortala=True)
-    doc.add_paragraph()
+    _bos_satir_ekle(doc)
 
     if alt_baslik:
         _paragraf_ekle(doc, alt_baslik, ortala=True)
-        doc.add_paragraph()
+        _bos_satir_ekle(doc)
 
     for satir in govde_satirlari:
         _paragraf_ekle(doc, satir)
