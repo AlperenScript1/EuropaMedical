@@ -1,3 +1,9 @@
+import ctypes
+import os
+import signal
+import subprocess
+import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -19,7 +25,14 @@ ARKA_PLAN = False
 PROJE_ADI = "Europa_medical_ihaleler"
 
 VERI_KLASORU = Path(__file__).resolve().parent / "Europa_medical_ihaleler_Dosyalari"
+PID_DOSYASI = Path(__file__).resolve().parent / "calisma.pid"
 log = TerminalLog()
+
+_driver = None
+_kapatiliyor = False
+_console_handler_ref = None
+_job_handle = None
+_parent_pid: int | None = None
 
 MEDICAL_SATIRLARI_TOPLA_JS = """
 const atlananlar = new Set(arguments[0] || []);
@@ -84,6 +97,232 @@ return {
     notice: accordionMetni('notice-accordion'),
 };
 """
+
+
+def _pid_kaydet():
+    PID_DOSYASI.write_text(str(os.getpid()), encoding="utf-8")
+
+
+def _pid_sil():
+    if PID_DOSYASI.exists():
+        PID_DOSYASI.unlink()
+
+
+def _chrome_kapat():
+    global _driver
+    if _driver is None:
+        return
+
+    try:
+        servis = getattr(_driver, "service", None)
+        if servis and servis.process and servis.process.poll() is None:
+            pid = servis.process.pid
+            os.system(f"taskkill /PID {pid} /T /F >nul 2>&1")
+            servis.process.kill()
+    except Exception:
+        pass
+
+    try:
+        _driver.quit()
+    except Exception:
+        pass
+
+    _driver = None
+
+
+def _temiz_kapat(zorla_cikis: bool = True):
+    """Terminal kapanınca veya Ctrl+C ile Chrome dahil her şeyi durdur."""
+    global _kapatiliyor
+
+    if _kapatiliyor:
+        return
+    _kapatiliyor = True
+
+    try:
+        log.bilgi("Program durduruluyor...")
+    except Exception:
+        print("[BİLGİ] Program durduruluyor...", flush=True)
+
+    _chrome_kapat()
+    _pid_sil()
+
+    try:
+        log.basarili(f"{PROJE_ADI} durduruldu.")
+    except Exception:
+        print(f"[OK] {PROJE_ADI} durduruldu.", flush=True)
+
+    if zorla_cikis:
+        os._exit(0)
+
+
+def _sinyal_yakala(*_args):
+    _temiz_kapat()
+
+
+def _windows_konsol_kapat_handler(ctrl_type):
+    # 0=Ctrl+C, 1=Ctrl+Break, 2=terminal X, 5=logoff, 6=shutdown
+    if ctrl_type in (0, 1, 2, 5, 6):
+        threading.Thread(target=_temiz_kapat, daemon=True).start()
+        return True
+    return False
+
+
+def _windows_islem_grubu_kur():
+    """Python kapanınca Chrome/chromedriver da kapansın."""
+    global _job_handle
+    if sys.platform != "win32":
+        return
+
+    kernel32 = ctypes.windll.kernel32
+
+    class IO_COUNTERS(ctypes.Structure):
+        _fields_ = [
+            ("ReadOperationCount", ctypes.c_uint64),
+            ("WriteOperationCount", ctypes.c_uint64),
+            ("OtherOperationCount", ctypes.c_uint64),
+            ("ReadTransferCount", ctypes.c_uint64),
+            ("WriteTransferCount", ctypes.c_uint64),
+            ("OtherTransferCount", ctypes.c_uint64),
+        ]
+
+    class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_int64),
+            ("PerJobUserTimeLimit", ctypes.c_int64),
+            ("LimitFlags", ctypes.c_uint32),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", ctypes.c_uint32),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", ctypes.c_uint32),
+            ("SchedulingClass", ctypes.c_uint32),
+        ]
+
+    class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+            ("IoInfo", IO_COUNTERS),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+    JobObjectExtendedLimitInformation = 9
+    PROCESS_SET_QUOTA = 0x0100
+    PROCESS_TERMINATE = 0x0001
+
+    _job_handle = kernel32.CreateJobObjectW(None, None)
+    if not _job_handle:
+        return
+
+    info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+    info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    kernel32.SetInformationJobObject(
+        _job_handle,
+        JobObjectExtendedLimitInformation,
+        ctypes.byref(info),
+        ctypes.sizeof(info),
+    )
+
+    mevcut = kernel32.OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, False, os.getpid())
+    if mevcut:
+        kernel32.AssignProcessToJobObject(_job_handle, mevcut)
+        kernel32.CloseHandle(mevcut)
+
+
+def _parent_pid_al() -> int | None:
+    if sys.platform != "win32":
+        return None
+    try:
+        sonuc = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                f"(Get-CimInstance Win32_Process -Filter 'ProcessId={os.getpid()}').ParentProcessId",
+            ],
+            capture_output=True,
+            text=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        return int(sonuc.stdout.strip())
+    except (ValueError, OSError):
+        return None
+
+
+def _process_yasiyor_mu(pid: int) -> bool:
+    try:
+        sonuc = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+            capture_output=True,
+            text=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        return str(pid) in sonuc.stdout
+    except OSError:
+        return True
+
+
+def _konsol_penceresi_kapandi_mi(hwnd: int) -> bool:
+    if not hwnd:
+        return False
+    return ctypes.windll.user32.IsWindow(hwnd) == 0
+
+
+def _terminal_kapanis_izle():
+    """Terminal sekmesi/carpisi kapaninca programi durdur."""
+
+    def _pencere_izle():
+        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        while not _kapatiliyor:
+            time.sleep(0.25)
+            if _konsol_penceresi_kapandi_mi(hwnd):
+                _temiz_kapat()
+                return
+
+    def _stdin_izle():
+        if sys.stdin is None or not sys.stdin.isatty():
+            return
+        try:
+            while not _kapatiliyor:
+                if sys.stdin.read(1) == "":
+                    _temiz_kapat()
+                    return
+        except Exception:
+            if not _kapatiliyor:
+                _temiz_kapat()
+
+    def _parent_izle():
+        if not _parent_pid:
+            return
+        while not _kapatiliyor:
+            time.sleep(0.5)
+            if not _process_yasiyor_mu(_parent_pid):
+                _temiz_kapat()
+                return
+
+    threading.Thread(target=_pencere_izle, daemon=True).start()
+    threading.Thread(target=_stdin_izle, daemon=True).start()
+    threading.Thread(target=_parent_izle, daemon=True).start()
+
+
+def sinyalleri_ayarla():
+    global _console_handler_ref, _parent_pid
+
+    signal.signal(signal.SIGINT, _sinyal_yakala)
+    signal.signal(signal.SIGTERM, _sinyal_yakala)
+    _windows_islem_grubu_kur()
+    _parent_pid = _parent_pid_al()
+
+    if sys.platform == "win32":
+        _console_handler_ref = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_uint)(
+            _windows_konsol_kapat_handler
+        )
+        ctypes.windll.kernel32.SetConsoleCtrlHandler(_console_handler_ref, True)
+
+    threading.Thread(target=_terminal_kapanis_izle, daemon=True).start()
 
 
 def tarayici_baslat():
@@ -302,8 +541,11 @@ def ilana_git(driver, ilan_no):
 
 def main():
     konsol_hazirla()
+    sinyalleri_ayarla()
+    _pid_kaydet()
+
     url = "https://ted.europa.eu/en/browse-by-business-sector"
-    driver = None
+    global _driver
     son_hata = None
 
     try:
@@ -313,25 +555,25 @@ def main():
         bugun_tarihi = bugunun_ted_tarihi()
         log.bilgi(f"Bugünün klasörü: {bugun.name}")
         log.bilgi(f"Sadece bugünün ihaleleri alınacak: {bugun_tarihi}")
-        driver = tarayici_baslat()  # Chrome açılır
-        driver.get(url)
+        _driver = tarayici_baslat()  # Chrome açılır
+        _driver.get(url)
 
         log.bilgi("Medical aranıyor...")
-        arama_kutusu = WebDriverWait(driver, 10).until(
+        arama_kutusu = WebDriverWait(_driver, 10).until(
             EC.element_to_be_clickable((By.XPATH, "//input[@id='ted-search-input-text']"))
         )
         arama_kutusu.click()
         arama_kutusu.send_keys("medical")
 
-        ara_butonu = WebDriverWait(driver, 10).until(
+        ara_butonu = WebDriverWait(_driver, 10).until(
             EC.element_to_be_clickable((By.XPATH, "(//button[@id='ted-search-submit'])[1]"))
         )
         ara_butonu.click()
         log.bilgi("Arama sonuçları bekleniyor...")
 
-        WebDriverWait(driver, 15).until(lambda d: "search/result" in d.current_url)
+        WebDriverWait(_driver, 15).until(lambda d: "search/result" in d.current_url)
         log.bilgi("Sonuçlar yüklendi, medical ilanlar taranıyor...")
-        sonuc_tablosu_bekle(driver)
+        sonuc_tablosu_bekle(_driver)
 
         atlanan_ilanlar = []
         kaydedilen_sayisi = 0
@@ -343,7 +585,7 @@ def main():
 
             while True:
                 bulunan_ilan_no = sonraki_medical_ilan_bul(
-                    driver, atlanan_ilanlar, bugun_tarihi
+                    _driver, atlanan_ilanlar, bugun_tarihi
                 )
                 if bulunan_ilan_no is ESKI_TARIH:
                     eski_tarihe_ulasildi = True
@@ -351,16 +593,16 @@ def main():
                 if not bulunan_ilan_no:
                     break
 
-                ilana_git(driver, bulunan_ilan_no)
+                ilana_git(_driver, bulunan_ilan_no)
                 try:
-                    ilan_verilerini_al(driver, bulunan_ilan_no)
+                    ilan_verilerini_al(_driver, bulunan_ilan_no)
                 except RuntimeError as e:
                     if "İlan verisi bulunamadı" in str(e):
                         log.uyari(
                             f"{bulunan_ilan_no} atlandı: detay sayfasında veri yok."
                         )
                         atlanan_ilanlar.append(bulunan_ilan_no)
-                        sonuclara_don(driver, bulunan_ilan_no)
+                        sonuclara_don(_driver, bulunan_ilan_no)
                         continue
                     raise
 
@@ -368,7 +610,7 @@ def main():
                 kaydedilen_sayisi += 1
 
                 log.bilgi("Sonraki medical ilan aranıyor...")
-                sonuclara_don(driver, bulunan_ilan_no)
+                sonuclara_don(_driver, bulunan_ilan_no)
 
             if eski_tarihe_ulasildi:
                 if kaydedilen_sayisi > 0:
@@ -384,7 +626,7 @@ def main():
 
             log.bilgi(f"Sayfa {sayfa_no} tamamlandı, sonraki sayfa deneniyor...")
 
-            if not sonraki_sayfaya_gec(driver, sayfa_no + 1):
+            if not sonraki_sayfaya_gec(_driver, sayfa_no + 1):
                 if kaydedilen_sayisi > 0:
                     log.basarili(
                         f"{kaydedilen_sayisi} ilan kaydedildi. "
@@ -397,7 +639,7 @@ def main():
                 break
 
             sayfa_no += 1
-            driver.execute_script("window.scrollTo(0, 0);")
+            _driver.execute_script("window.scrollTo(0, 0);")
             log.bilgi(f"Sayfa {sayfa_no}'de medical ilanlar taranıyor...")
 
     except Exception as e:
@@ -405,11 +647,11 @@ def main():
         log.hata(f"Beklenmeyen hata: {e}")
 
     finally:
-        if driver is not None:
-            # --- CHROME KAPATILIYOR ---
-            driver.quit()
-        log.hata_kaydet(son_hata)
-        log.basarili(f"{PROJE_ADI} durduruldu.")
+        if not _kapatiliyor:
+            _chrome_kapat()
+            _pid_sil()
+            log.hata_kaydet(son_hata)
+            log.basarili(f"{PROJE_ADI} durduruldu.")
 
 
 if __name__ == "__main__":

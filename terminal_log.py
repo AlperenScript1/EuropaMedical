@@ -1,3 +1,5 @@
+import ctypes
+import shutil
 import sys
 import traceback
 from datetime import datetime
@@ -8,12 +10,54 @@ from colorama import Fore, Style, init
 init(autoreset=True)
 
 HATA_GUNLUK_KLASORU = Path(__file__).resolve().parent / "hata günlükleri"
+UST_BANNER_METNI = "CTRL+C ile uygulamayı kapatabilirsiniz"
 
 YESIL = Fore.GREEN
 KIRMIZI = Fore.RED
 SARI = Fore.YELLOW
 MAVI = Fore.CYAN
 RESET = Style.RESET_ALL
+
+
+def _vt_modu_ac() -> None:
+    if sys.platform != "win32":
+        return
+    try:
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.GetStdHandle(-11)
+        mode = ctypes.c_uint32()
+        kernel32.GetConsoleMode(handle, ctypes.byref(mode))
+        kernel32.SetConsoleMode(handle, mode.value | 0x0004)
+    except Exception:
+        pass
+
+
+def _terminal_genisligi() -> int:
+    try:
+        return shutil.get_terminal_size((120, 30)).columns
+    except OSError:
+        return 120
+
+
+def ust_banner_goster() -> None:
+    """Ust satirda sabit kirmizi uyari; asagidaki loglar kaydirilir."""
+    _vt_modu_ac()
+    _banner_satirini_koru()
+    sys.stdout.write("\033[2;999;r")
+    sys.stdout.write("\033[2;1H")
+    sys.stdout.flush()
+
+
+def _banner_satirini_koru() -> None:
+    if not sys.stdout.isatty():
+        return
+    genislik = _terminal_genisligi()
+    metin = UST_BANNER_METNI.center(genislik)
+    sys.stdout.write("\033[s")
+    sys.stdout.write("\033[1;1H")
+    sys.stdout.write(f"{KIRMIZI}{metin.ljust(genislik)[:genislik]}{RESET}")
+    sys.stdout.write("\033[u")
+    sys.stdout.flush()
 
 
 class TerminalLog:
@@ -25,6 +69,7 @@ class TerminalLog:
         satir = f"[{etiket}] {mesaj}"
         self.kayitlar.append(satir)
         print(f"{renk}{satir}{RESET}", flush=True)
+        _banner_satirini_koru()
 
     def bilgi(self, mesaj: str) -> None:
         self._ekle("BİLGİ", mesaj, YESIL)
@@ -58,6 +103,7 @@ class TerminalLog:
 
         dosya_yolu.write_text(icerik, encoding="utf-8")
         print(f"{KIRMIZI}[HATA] Günlük kaydedildi: {dosya_yolu}{RESET}", flush=True)
+        _banner_satirini_koru()
         return dosya_yolu
 
 
@@ -68,3 +114,4 @@ def konsol_hazirla() -> None:
             sys.stderr.reconfigure(encoding="utf-8")
         except Exception:
             pass
+    ust_banner_goster()
