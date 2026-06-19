@@ -15,7 +15,7 @@ UST_BANNER_METNI = "CTRL+C ile uygulamayı kapatabilirsiniz"
 YESIL = Fore.GREEN
 KIRMIZI = Fore.RED
 SARI = Fore.YELLOW
-MAVI = Fore.CYAN
+MAVI = Fore.BLUE
 RESET = Style.RESET_ALL
 
 
@@ -72,10 +72,10 @@ class TerminalLog:
         _banner_satirini_koru()
 
     def bilgi(self, mesaj: str) -> None:
-        self._ekle("BİLGİ", mesaj, YESIL)
+        self._ekle("BİLGİ", mesaj, MAVI)
 
     def bilgi_mavi(self, mesaj: str) -> None:
-        self._ekle("BİLGİ", mesaj, MAVI)
+        self.bilgi(mesaj)
 
     def basarili(self, mesaj: str) -> None:
         self._ekle("OK", mesaj, YESIL)

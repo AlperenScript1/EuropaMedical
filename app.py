@@ -1,14 +1,13 @@
 import ctypes
 import os
 import signal
-import subprocess
 import sys
 import threading
 import time
 from datetime import datetime
 from pathlib import Path
 
-from cevir import metin_turkce_mi, metni_turkceye_cevir
+from cevir import CeviriBasarisizError, metin_turkce_mi, metni_turkceye_cevir
 from docx_export import docx_olustur
 from selenium.common.exceptions import TimeoutException
 from selenium import webdriver
@@ -33,6 +32,7 @@ _kapatiliyor = False
 _console_handler_ref = None
 _job_handle = None
 _parent_pid: int | None = None
+_arama_sonuc_url: str | None = None
 
 MEDICAL_SATIRLARI_TOPLA_JS = """
 const atlananlar = new Set(arguments[0] || []);
@@ -161,10 +161,16 @@ def _sinyal_yakala(*_args):
 
 def _windows_konsol_kapat_handler(ctrl_type):
     # 0=Ctrl+C, 1=Ctrl+Break, 2=terminal X, 5=logoff, 6=shutdown
-    if ctrl_type in (0, 1, 2, 5, 6):
-        threading.Thread(target=_temiz_kapat, daemon=True).start()
+    if ctrl_type not in (0, 1, 2, 5, 6):
+        return False
+
+    # X ile kapatmada handler hemen cikmali; thread ile donmek Python'u yetim birakir.
+    if ctrl_type in (2, 5, 6):
+        _temiz_kapat()
         return True
-    return False
+
+    threading.Thread(target=_temiz_kapat, daemon=True).start()
+    return True
 
 
 def _windows_islem_grubu_kur():
@@ -232,37 +238,92 @@ def _windows_islem_grubu_kur():
         kernel32.CloseHandle(mevcut)
 
 
+def _process_joba_ekle(pid: int) -> None:
+    """Chromedriver gibi alt surecleri de job'a bagla; terminal kapaninca onlar da kapansin."""
+    global _job_handle
+    if sys.platform != "win32" or not _job_handle or not pid:
+        return
+
+    PROCESS_SET_QUOTA = 0x0100
+    PROCESS_TERMINATE = 0x0001
+    kernel32 = ctypes.windll.kernel32
+    surec = kernel32.OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, False, pid)
+    if surec:
+        kernel32.AssignProcessToJobObject(_job_handle, surec)
+        kernel32.CloseHandle(surec)
+
+
 def _parent_pid_al() -> int | None:
     if sys.platform != "win32":
         return None
-    try:
-        sonuc = subprocess.run(
-            [
-                "powershell",
-                "-NoProfile",
-                "-Command",
-                f"(Get-CimInstance Win32_Process -Filter 'ProcessId={os.getpid()}').ParentProcessId",
-            ],
-            capture_output=True,
-            text=True,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        return int(sonuc.stdout.strip())
-    except (ValueError, OSError):
+
+    TH32CS_SNAPPROCESS = 0x00000002
+    INVALID_HANDLE_VALUE = -1
+    kernel32 = ctypes.windll.kernel32
+
+    class PROCESSENTRY32(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", ctypes.c_uint32),
+            ("cntUsage", ctypes.c_uint32),
+            ("th32ProcessID", ctypes.c_uint32),
+            ("th32DefaultHeapID", ctypes.c_size_t),
+            ("th32ModuleID", ctypes.c_uint32),
+            ("cntThreads", ctypes.c_uint32),
+            ("th32ParentProcessID", ctypes.c_uint32),
+            ("pcPriClassBase", ctypes.c_long),
+            ("dwFlags", ctypes.c_uint32),
+            ("szExeFile", ctypes.c_char * 260),
+        ]
+
+    snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    if snapshot == INVALID_HANDLE_VALUE:
         return None
+
+    try:
+        entry = PROCESSENTRY32()
+        entry.dwSize = ctypes.sizeof(PROCESSENTRY32)
+        mevcut_pid = os.getpid()
+        if not kernel32.Process32First(snapshot, ctypes.byref(entry)):
+            return None
+        while True:
+            if entry.th32ProcessID == mevcut_pid:
+                return entry.th32ParentProcessID
+            if not kernel32.Process32Next(snapshot, ctypes.byref(entry)):
+                break
+        return None
+    finally:
+        kernel32.CloseHandle(snapshot)
 
 
 def _process_yasiyor_mu(pid: int) -> bool:
-    try:
-        sonuc = subprocess.run(
-            ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
-            capture_output=True,
-            text=True,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        return str(pid) in sonuc.stdout
-    except OSError:
+    if sys.platform != "win32":
         return True
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    kernel32 = ctypes.windll.kernel32
+    surec = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if surec:
+        kernel32.CloseHandle(surec)
+        return True
+    return False
+
+
+def _kapatma_kontrol() -> bool:
+    """Terminal veya calistiran pencere kapandiysa programi durdur."""
+    if _kapatiliyor:
+        return False
+    if sys.platform != "win32":
+        return True
+
+    hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+    if hwnd and ctypes.windll.user32.IsWindow(hwnd) == 0:
+        _temiz_kapat()
+        return False
+
+    if _parent_pid and not _process_yasiyor_mu(_parent_pid):
+        _temiz_kapat()
+        return False
+
+    return True
 
 
 def _konsol_penceresi_kapandi_mi(hwnd: int) -> bool:
@@ -298,7 +359,7 @@ def _terminal_kapanis_izle():
         if not _parent_pid:
             return
         while not _kapatiliyor:
-            time.sleep(0.5)
+            time.sleep(0.2)
             if not _process_yasiyor_mu(_parent_pid):
                 _temiz_kapat()
                 return
@@ -343,6 +404,9 @@ def tarayici_baslat():
 
     # --- CHROME AÇILIYOR ---
     driver = webdriver.Chrome(options=options)
+    servis = getattr(driver, "service", None)
+    if servis and servis.process and servis.process.pid:
+        _process_joba_ekle(servis.process.pid)
     if ARKA_PLAN:
         driver.set_window_size(1920, 1080)
     else:
@@ -389,16 +453,13 @@ def ilan_verilerini_al(driver, ilan_no):
     try:
         ozet = metni_turkceye_cevir(ozet) if ozet else ozet
         ilan = metni_turkceye_cevir(ilan) if ilan else ilan
-    except Exception as e:
-        log.uyari(
-            f"Çeviri API hatası ({ilan_no}): {e} "
-            "— Word dosyası orijinal metinle kaydedilecek."
-        )
+    except CeviriBasarisizError as e:
+        raise RuntimeError(f"Çevirilemedi: {ilan_no}") from e
 
-    if metin_turkce_mi(f"{ozet}\n{ilan}"):
-        log.basarili("Metin Türkçe'ye çevrildi.")
-    else:
-        log.uyari("Çeviri tamamlanamadı; Word dosyası İngilizce kaydedilebilir.")
+    if not metin_turkce_mi(f"{ozet}\n{ilan}"):
+        raise RuntimeError(f"Çevirilemedi: {ilan_no}")
+
+    log.basarili("Metin Türkçe'ye çevrildi.")
 
     bugun_klasoru = bugunun_klasoru()
     docx_yolu = bugun_klasoru / f"{ilan_no}.docx"
@@ -410,11 +471,34 @@ def ilan_verilerini_al(driver, ilan_no):
     return docx_yolu
 
 
-def sonuclara_don(driver, son_ilan_no: str | None = None):
+def sonuclara_don(driver, son_ilan_no: str | None = None) -> bool:
+    global _arama_sonuc_url
     log.bilgi("Arama sonuçlarına dönülüyor...")
-    driver.back()
-    WebDriverWait(driver, 15).until(lambda d: "search/result" in d.current_url)
-    sonuc_tablosu_bekle(driver)
+
+    for deneme in range(1, 4):
+        try:
+            if deneme == 1:
+                driver.back()
+            elif _arama_sonuc_url:
+                log.uyari("Geri dönüş başarısız, arama sayfası yeniden açılıyor...")
+                driver.get(_arama_sonuc_url)
+            else:
+                driver.back()
+
+            WebDriverWait(driver, 20).until(
+                lambda d: "search/result" in d.current_url
+            )
+            sonuc_tablosu_bekle(driver)
+            break
+        except TimeoutException:
+            if deneme < 3:
+                log.uyari(
+                    f"Arama tablosu yüklenemedi, tekrar deneniyor ({deneme}/3)..."
+                )
+                time.sleep(2)
+            else:
+                log.hata("Arama sonuçlarına dönülemedi; tablo yüklenmedi.")
+                return False
 
     if son_ilan_no:
         try:
@@ -433,6 +517,8 @@ def sonuclara_don(driver, son_ilan_no: str | None = None):
     else:
         driver.execute_script("window.scrollTo(0, 0);")
         time.sleep(1)
+
+    return True
 
 
 def sonuc_tablosu_bekle(driver):
@@ -483,6 +569,8 @@ def sonraki_medical_ilan_bul(driver, atlanan_ilanlar, bugun_tarihi: str):
     onceki_scroll = -1
 
     while sabit_kaydirma < 4:
+        if not _kapatma_kontrol():
+            return None
         sonuc = driver.execute_script(
             MEDICAL_SATIRLARI_TOPLA_JS, atlanan_ilanlar, bugun_tarihi
         )
@@ -574,6 +662,7 @@ def main():
         log.bilgi("Arama sonuçları bekleniyor...")
 
         WebDriverWait(_driver, 15).until(lambda d: "search/result" in d.current_url)
+        _arama_sonuc_url = _driver.current_url
         log.bilgi("Sonuçlar yüklendi, medical ilanlar taranıyor...")
         sonuc_tablosu_bekle(_driver)
 
@@ -583,9 +672,13 @@ def main():
         eski_tarihe_ulasildi = False
 
         while True:
+            if not _kapatma_kontrol():
+                return
             log.bilgi(f"Sayfa {sayfa_no} taranıyor ({bugun_tarihi})...")
 
             while True:
+                if not _kapatma_kontrol():
+                    return
                 bulunan_ilan_no = sonraki_medical_ilan_bul(
                     _driver, atlanan_ilanlar, bugun_tarihi
                 )
@@ -599,12 +692,22 @@ def main():
                 try:
                     ilan_verilerini_al(_driver, bulunan_ilan_no)
                 except RuntimeError as e:
-                    if "İlan verisi bulunamadı" in str(e):
+                    mesaj = str(e)
+                    if "İlan verisi bulunamadı" in mesaj:
                         log.uyari(
                             f"{bulunan_ilan_no} atlandı: detay sayfasında veri yok."
                         )
                         atlanan_ilanlar.append(bulunan_ilan_no)
-                        sonuclara_don(_driver, bulunan_ilan_no)
+                        if not sonuclara_don(_driver, bulunan_ilan_no):
+                            return
+                        continue
+                    if "Çevirilemedi" in mesaj:
+                        log.uyari(
+                            f"{bulunan_ilan_no} atlandı: Türkçe'ye çevrilemedi."
+                        )
+                        atlanan_ilanlar.append(bulunan_ilan_no)
+                        if not sonuclara_don(_driver, bulunan_ilan_no):
+                            return
                         continue
                     raise
 
@@ -612,7 +715,8 @@ def main():
                 kaydedilen_sayisi += 1
 
                 log.bilgi("Sonraki medical ilan aranıyor...")
-                sonuclara_don(_driver, bulunan_ilan_no)
+                if not sonuclara_don(_driver, bulunan_ilan_no):
+                    return
 
             if eski_tarihe_ulasildi:
                 if kaydedilen_sayisi > 0:

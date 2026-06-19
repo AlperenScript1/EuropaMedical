@@ -1,6 +1,8 @@
 import re
 from pathlib import Path
 
+from word_makro import makro1_temizle
+
 from docx import Document
 from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -175,6 +177,8 @@ def _ozet_satirlari(
             continue
         if tablo_cinsi_ham and _bas_harf_buyuk(satir).upper() == tablo_cinsi_ham.upper():
             continue
+        if _birlesik_tirnakli_satir_mi(satir):
+            continue
         if re.fullmatch(r"\d+\.\s+[^:\.]+", satir):
             continue
         satirlar.append(satir)
@@ -238,6 +242,87 @@ def _org_ve_bildirim_satirlari(notice: str) -> list[str]:
     return sonuc
 
 
+def _tirnak_icerikleri(satir: str) -> list[str]:
+    return [
+        parca.strip()
+        for parca in re.findall(r"[\"“]([^\"”]+)[\"”]", satir)
+        if parca.strip()
+    ]
+
+
+def _net_baslik_skoru(metin: str) -> tuple[int, int]:
+    """Kisa ve net basliklari one cikarir; dusuk skor daha iyi."""
+    metin = metin.strip()
+    ceza = 0
+    if re.search(r"anlaşmas|anlaşma'|göre|pursuant|according", metin, re.IGNORECASE):
+        ceza += 80
+    if re.search(r"modernizasyonu.*modernizasyonu|yeniden inşası|donatılması", metin, re.IGNORECASE):
+        ceza += 40
+    return ceza, len(metin)
+
+
+def _en_net_baslik_sec(adaylar: list[str]) -> str:
+    temiz = [a.strip() for a in adaylar if a.strip() and len(a.strip()) >= 8]
+    if not temiz:
+        return ""
+    en_iyi = min(temiz, key=_net_baslik_skoru)
+    return _bas_harf_buyuk(en_iyi)
+
+
+def _birlesik_tirnakli_satir_mi(satir: str) -> bool:
+    if len(_tirnak_icerikleri(satir)) >= 2:
+        return True
+    return bool(re.search(r'["“].*?\s+ve\s+["“]', satir, re.IGNORECASE))
+
+
+def _proje_basligi_bul(summary: str, notice: str = "") -> str:
+    """Cok lotlu ihalelerde kisa proje adini bulur (tirnak icinden veya buyuk harfli baslik)."""
+    ana = _ana_baslik_bul(summary)
+    if ana:
+        return ana
+
+    adaylar: list[str] = []
+    for ham in summary.splitlines():
+        satir = _normalize_satir(ham)
+        if not satir or _haric_mi(satir):
+            continue
+        if satir.startswith("LOT-"):
+            continue
+        if re.match(r"^[\wğüşıöçĞÜŞİÖÇ]+\s*[:\–-]\s*", satir):
+            continue
+        if re.fullmatch(r"\d+\.\s+[^:\.]+", satir):
+            continue
+
+        tirnaklar = _tirnak_icerikleri(satir)
+        if tirnaklar:
+            adaylar.extend(tirnaklar)
+            continue
+
+        harfler = [c for c in satir if c.isalpha()]
+        if len(harfler) < 10 or len(satir) > 140:
+            continue
+        buyuk_oran = sum(1 for c in harfler if c.isupper()) / len(harfler)
+        if buyuk_oran >= 0.75:
+            adaylar.append(satir)
+
+    return _en_net_baslik_sec(adaylar)
+
+
+def _cinsi_kisalt(cinsi: str) -> str:
+    """Uzun lot/urun aciklamasini kisa net cins metnine indirger."""
+    metin = cinsi.strip()
+    for pattern in (
+        r"\s+için\s+bilgisayar\s+donanımına\s+sahip\s+bir\s+",
+        r"\s+için\s+.+?\s+sahip\s+bir\s+",
+        r"\s+bir\s+(?=yazılım|set|donanım|cihaz|sistem|paket)",
+        r"\s+video\s+parçası\s*$",
+        r"^bir\s+",
+    ):
+        metin = re.sub(pattern, " ", metin, flags=re.IGNORECASE)
+    metin = re.sub(r"\s+", " ", metin).strip()
+    return _bas_harf_buyuk(metin)
+
+
 def _ana_baslik_bul(summary: str) -> str:
     """Özet metnindeki ana büyük harfli ihale başlığını bulur."""
     for ham in summary.splitlines():
@@ -277,6 +362,9 @@ def _tablo_cinsi_bul(summary: str, notice: str, ihale_basligi: str) -> str:
     lotlar = _lot_aciklamalari(summary, notice)
 
     if len(lotlar) >= 2:
+        proje = _proje_basligi_bul(summary, notice)
+        if proje:
+            return proje
         ana_baslik = _ana_baslik_bul(summary)
         if ana_baslik:
             return ana_baslik
@@ -302,22 +390,50 @@ def _tablo_cinsi_bul(summary: str, notice: str, ihale_basligi: str) -> str:
     return ""
 
 
+_BIRIM_KELIMELERI = r"(?:Adet|Parça|Parca|Pcs|Pieces?|Units?)"
+_CINSI_MIKTAR_TIRE = re.compile(
+    rf"\s*[-–—]\s*(\d+)\s*{_BIRIM_KELIMELERI}\.?",
+    re.IGNORECASE,
+)
+_CINSI_MIKTAR_SON = re.compile(
+    rf"\s+(\d+)\s*{_BIRIM_KELIMELERI}\.?\s*$",
+    re.IGNORECASE,
+)
+_CINSI_MIKTAR_ARA = re.compile(
+    rf"\s+(\d+)\s*{_BIRIM_KELIMELERI}\.?",
+    re.IGNORECASE,
+)
+_CINSI_MIKTAR_BAS = re.compile(
+    rf"^(\d+)\s*{_BIRIM_KELIMELERI}\.?\s*[-–—]?\s*",
+    re.IGNORECASE,
+)
+
+
 def _cinsi_miktar_ayir(cinsi: str) -> tuple[str, str, str]:
     """
-    Cinsi sonundaki '- 11 Parça' / '11 Adet' gibi ifadeleri ayırır.
+    Cinsi içindeki '- 11 Parça' / '3 Adet' gibi miktar ifadelerini ayırır.
     Miktar ve birim tablo sütunlarına gider; cinsi sadece ürün/hizmet adını tutar.
     """
-    for pattern in (
-        r"\s*[-–—]\s*(\d+)\s*(?:Adet|Parça|Parca|Pcs|Pieces?|Units?)\.?\s*$",
-        r"\s+(\d+)\s*(?:Adet|Parça|Parca|Pcs|Pieces?|Units?)\.?\s*$",
-    ):
-        match = re.search(pattern, cinsi, re.IGNORECASE)
-        if match:
-            temiz = cinsi[: match.start()].strip()
-            temiz = re.sub(r"\s*[-–—]\s*$", "", temiz)
-            return _bas_harf_buyuk(temiz), match.group(1), "Adet"
+    metin = cinsi.strip()
+    miktar: str | None = None
 
-    return _bas_harf_buyuk(cinsi.strip()), "1", "Adet"
+    for pattern in (
+        _CINSI_MIKTAR_TIRE,
+        _CINSI_MIKTAR_SON,
+        _CINSI_MIKTAR_ARA,
+        _CINSI_MIKTAR_BAS,
+    ):
+        match = pattern.search(metin)
+        if not match:
+            continue
+        miktar = match.group(1)
+        metin = (metin[: match.start()] + metin[match.end() :]).strip()
+        break
+
+    metin = re.sub(r"\s*[-–—]\s*$", "", metin)
+    metin = re.sub(r"\s+", " ", metin).strip()
+
+    return _bas_harf_buyuk(metin), miktar or "1", "Adet"
 
 
 def _tablo_miktar_birim_bul(summary: str, notice: str) -> tuple[str, str]:
@@ -335,11 +451,14 @@ def _tablo_miktar_birim_bul(summary: str, notice: str) -> tuple[str, str]:
 
 
 def _tablo_satirlari(summary: str, notice: str, ihale_basligi: str) -> list[tuple[str, str, str, str]]:
+    lot_sayisi = len(_lot_aciklamalari(summary, notice))
     cinsi_ham = _tablo_cinsi_bul(summary, notice, ihale_basligi)
     if not cinsi_ham:
         return []
 
     cinsi, miktar, birim = _cinsi_miktar_ayir(cinsi_ham)
+    if lot_sayisi <= 1:
+        cinsi = _cinsi_kisalt(cinsi)
     if miktar == "1":
         govde_miktar, govde_birim = _tablo_miktar_birim_bul(summary, notice)
         if govde_miktar != "1":
@@ -464,6 +583,36 @@ def _tablo_ekle(doc: Document, satirlar: list[tuple[str, str, str, str]]):
             _hucre_yaz(hucre, deger)
 
 
+def _makro1_paragraf_uygula(paragraf) -> None:
+    """Makro1 temizligini paragrafa uygular; kalin run yapisi korunur."""
+    if len(paragraf.runs) <= 1:
+        metin = paragraf.text
+        temiz = makro1_temizle(metin)
+        if temiz == metin:
+            return
+        if paragraf.runs:
+            paragraf.runs[0].text = temiz
+        elif temiz:
+            paragraf.add_run(temiz)
+        return
+
+    for run in paragraf.runs:
+        if run.text:
+            run.text = makro1_temizle(run.text)
+
+
+def _makro1_doc_uygula(doc: Document) -> None:
+    """Ctrl+1 makrosu: Word kaydedilmeden hemen once tum belgeye uygulanir."""
+    for paragraf in doc.paragraphs:
+        _makro1_paragraf_uygula(paragraf)
+
+    for tablo in doc.tables:
+        for satir in tablo.rows:
+            for hucre in satir.cells:
+                for paragraf in hucre.paragraphs:
+                    _makro1_paragraf_uygula(paragraf)
+
+
 def docx_olustur(
     summary: str,
     notice: str,
@@ -499,5 +648,6 @@ def docx_olustur(
     if tablo_satirlari:
         _tablo_ekle(doc, tablo_satirlari)
 
+    _makro1_doc_uygula(doc)
     doc.save(str(cikti_yolu))
     return cikti_yolu
