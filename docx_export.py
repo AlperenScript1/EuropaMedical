@@ -33,10 +33,15 @@ FORM_TURLERI = {
 
 REKABET_FORM_TURLERI = {"REKABET", "KONKUR", "COMPETITION", "CONTRACT NOTICE", "İLAN"}
 
-KALIN_TARIH_ETIKETLERI = [
+TAM_KALIN_TARIH_ETIKETLERI = [
     "Son teklif tarihi",
     "Son başvuru tarihi",
     "Tekliflerin son teslim tarihi",
+    "İhalelerin son teslim tarihi",
+    "İhalenin son teslim tarihi",
+]
+
+KISMI_KALIN_TARIH_ETIKETLERI = [
     "Sözleşmenin imzalanma tarihi",
     "Bildirimin gönderilme tarihi",
     "Yayınlanma tarihi",
@@ -268,12 +273,24 @@ def _tarih_degeri_parcala(deger: str) -> list[tuple[str, bool]]:
     return parcalar or [(deger, True)]
 
 
-def _kalin_etiket_mi(etiket: str) -> bool:
+def _etiket_eslesir(etiket: str, adaylar: list[str]) -> bool:
     etiket = etiket.strip()
     return any(
-        etiket.lower() == t.lower() or etiket.lower().startswith(t.lower())
-        for t in KALIN_TARIH_ETIKETLERI
+        etiket.lower() == aday.lower() or etiket.lower().startswith(aday.lower())
+        for aday in adaylar
     )
+
+
+def _tam_kalin_etiket_mi(etiket: str) -> bool:
+    return _etiket_eslesir(etiket, TAM_KALIN_TARIH_ETIKETLERI)
+
+
+def _kismi_kalin_etiket_mi(etiket: str) -> bool:
+    return _etiket_eslesir(etiket, KISMI_KALIN_TARIH_ETIKETLERI)
+
+
+def _kalin_etiket_mi(etiket: str) -> bool:
+    return _tam_kalin_etiket_mi(etiket) or _kismi_kalin_etiket_mi(etiket)
 
 
 def _paragraf_ekle(doc: Document, satir: str, ortala: bool = False):
@@ -286,8 +303,10 @@ def _paragraf_ekle(doc: Document, satir: str, ortala: bool = False):
         etiket, deger = satir.split(":", 1)
         etiket = etiket.strip()
         deger = deger.strip()
-        _run_ekle(paragraf, f"{etiket}:")
-        if _kalin_etiket_mi(etiket):
+        _run_ekle(paragraf, f"{etiket}:", kalin=_tam_kalin_etiket_mi(etiket))
+        if _tam_kalin_etiket_mi(etiket):
+            _run_ekle(paragraf, deger, kalin=True)
+        elif _kismi_kalin_etiket_mi(etiket):
             for parca, kalin in _tarih_degeri_parcala(deger):
                 _run_ekle(paragraf, parca, kalin=kalin)
         else:
