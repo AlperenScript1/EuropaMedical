@@ -2,11 +2,18 @@ import re
 from pathlib import Path
 
 from docx import Document
+from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.shared import Pt, RGBColor
+from docx.shared import Emu, Pt, RGBColor
 
 FONT_ADI = "Times New Roman"
 FONT_BOYUT = Pt(12)
+TABLO_KOLON_GENISLIKLERI = [
+    Emu(750000),   # Sıra No
+    Emu(3600000),  # Cinsi (geniş)
+    Emu(1100000),  # Miktarı
+    Emu(1100000),  # Birim
+]
 
 HARIC_TUTULACAKLAR = [
     r"^Resmi dil\s*\(",
@@ -229,19 +236,93 @@ def _org_ve_bildirim_satirlari(notice: str) -> list[str]:
     return sonuc
 
 
-def _tablo_satirlari(summary: str, notice: str, ihale_basligi: str) -> list[tuple[str, str, str, str]]:
+def _ana_baslik_bul(summary: str) -> str:
+    """Özet metnindeki ana büyük harfli ihale başlığını bulur."""
+    for ham in summary.splitlines():
+        satir = _normalize_satir(ham)
+        if not satir or _haric_mi(satir):
+            continue
+        if re.match(r"^[\wğüşıöçĞÜŞİÖÇ]+\s*[:\–-]\s*", satir):
+            continue
+        if re.fullmatch(r"\d+\.\s+[^:\.]+", satir):
+            continue
+        if satir.startswith("LOT-"):
+            continue
+
+        harfler = [c for c in satir if c.isalpha()]
+        if len(harfler) < 8:
+            continue
+        buyuk_oran = sum(1 for c in harfler if c.isupper()) / len(harfler)
+        if buyuk_oran >= 0.75:
+            return _bas_harf_buyuk(satir)
+    return ""
+
+
+def _lot_aciklamalari(summary: str, notice: str) -> list[str]:
+    metin = f"{summary}\n{notice}"
+    lotlar: dict[str, str] = {}
+    for lot_no, aciklama in re.findall(r"(LOT-\d+)\s*:\s*(.+)", metin, re.IGNORECASE):
+        lot_anahtar = lot_no.upper()
+        if lot_anahtar in lotlar:
+            continue
+        aciklama = re.sub(r"^Lot\s+\d+\s*-\s*", "", aciklama.strip(), flags=re.IGNORECASE)
+        if aciklama:
+            lotlar[lot_anahtar] = aciklama
+    return list(lotlar.values())
+
+
+def _tablo_cinsi_bul(summary: str, notice: str, ihale_basligi: str) -> str:
+    lotlar = _lot_aciklamalari(summary, notice)
+
+    if len(lotlar) >= 2:
+        ana_baslik = _ana_baslik_bul(summary)
+        if ana_baslik:
+            return ana_baslik
+
+    if len(lotlar) == 1:
+        return _bas_harf_buyuk(lotlar[0])
+
     if ihale_basligi:
-        return [("1", ihale_basligi, "", "")]
+        return ihale_basligi
+
+    ana_baslik = _ana_baslik_bul(summary)
+    if ana_baslik:
+        return ana_baslik
 
     metin = f"{summary}\n{notice}"
-    for kod, aciklama in re.findall(
+    for _, aciklama in re.findall(
         r"(?:cpv\)|CPV\)|sınıflandırma\s*\(\s*cpv\s*\))\s*:\s*(\d{8})\s+(.+)",
         metin,
         re.IGNORECASE,
     ):
-        return [("1", _bas_harf_buyuk(aciklama.strip()), "", "")]
+        return _bas_harf_buyuk(aciklama.strip())
 
-    return []
+    return ""
+
+
+def _tablo_miktar_birim_bul(summary: str, notice: str) -> tuple[str, str]:
+    metin = f"{summary}\n{notice}"
+    adet = re.search(r"(\d+)\s*[Aa]det", metin)
+    if adet:
+        return adet.group(1), "Adet"
+
+    miktar = re.search(
+        r"(?:Tahmini miktar|Miktar|Estimated quantity)\s*:\s*(\d+)",
+        metin,
+        re.IGNORECASE,
+    )
+    if miktar:
+        return miktar.group(1), "Adet"
+
+    return "1", "Adet"
+
+
+def _tablo_satirlari(summary: str, notice: str, ihale_basligi: str) -> list[tuple[str, str, str, str]]:
+    cinsi = _tablo_cinsi_bul(summary, notice, ihale_basligi)
+    if not cinsi:
+        return []
+    miktar, birim = _tablo_miktar_birim_bul(summary, notice)
+    return [("1", cinsi, miktar, birim)]
 
 
 def _varsayilan_yazi_tipi_ayarla(doc: Document):
@@ -317,13 +398,37 @@ def _paragraf_ekle(doc: Document, satir: str, ortala: bool = False):
     return paragraf
 
 
-def _hucre_yaz(hucre, metin: str):
+def _hucre_yaz(hucre, metin: str, kalin: bool = False):
     hucre.text = ""
+    hucre.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
     paragraf = hucre.paragraphs[0]
+    paragraf.paragraph_format.space_before = Pt(0)
+    paragraf.paragraph_format.space_after = Pt(0)
     run = paragraf.add_run(metin)
     run.font.name = FONT_ADI
     run.font.size = FONT_BOYUT
+    run.font.bold = kalin
     run.font.color.rgb = RGBColor(0, 0, 0)
+
+
+def _tablo_ekle(doc: Document, satirlar: list[tuple[str, str, str, str]]):
+    tablo = doc.add_table(rows=1 + len(satirlar), cols=4)
+    tablo.style = "Table Grid"
+    tablo.autofit = False
+
+    basliklar = ["Sıra No", "Cinsi", "Miktarı", "Birim"]
+    for ci, baslik in enumerate(basliklar):
+        genislik = TABLO_KOLON_GENISLIKLERI[ci]
+        tablo.columns[ci].width = genislik
+        _hucre_yaz(tablo.rows[0].cells[ci], baslik)
+        tablo.rows[0].cells[ci].width = genislik
+
+    for row_idx, row_data in enumerate(satirlar, start=1):
+        for col_idx, deger in enumerate(row_data):
+            genislik = TABLO_KOLON_GENISLIKLERI[col_idx]
+            hucre = tablo.rows[row_idx].cells[col_idx]
+            hucre.width = genislik
+            _hucre_yaz(hucre, deger)
 
 
 def docx_olustur(
@@ -359,13 +464,7 @@ def docx_olustur(
         _paragraf_ekle(doc, satir)
 
     if tablo_satirlari:
-        tablo = doc.add_table(rows=1 + len(tablo_satirlari), cols=4)
-        baslik_hucreleri = ["Sıra No", "Cinsi", "Miktarı", "Birim"]
-        for i, baslik in enumerate(baslik_hucreleri):
-            _hucre_yaz(tablo.rows[0].cells[i], baslik)
-        for row_idx, row_data in enumerate(tablo_satirlari, start=1):
-            for col_idx, deger in enumerate(row_data):
-                _hucre_yaz(tablo.rows[row_idx].cells[col_idx], deger)
+        _tablo_ekle(doc, tablo_satirlari)
 
     doc.save(str(cikti_yolu))
     return cikti_yolu
