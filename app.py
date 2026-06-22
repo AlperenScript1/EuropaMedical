@@ -12,6 +12,7 @@ from docx_export import docx_olustur
 from selenium.common.exceptions import TimeoutException
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -391,6 +392,10 @@ def tarayici_baslat():
     options = Options()
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_argument("--lang=tr-TR")
+    options.add_argument("--disable-logging")
+    options.add_argument("--log-level=3")
+    options.add_argument("--disable-background-networking")
+    options.add_experimental_option("excludeSwitches", ["enable-logging"])
 
     if ARKA_PLAN:
         options.add_argument("--headless=new")
@@ -403,7 +408,8 @@ def tarayici_baslat():
         log.bilgi("Chrome görünür modda çalışıyor...")
 
     # --- CHROME AÇILIYOR ---
-    driver = webdriver.Chrome(options=options)
+    service = Service(log_path=os.devnull)
+    driver = webdriver.Chrome(service=service, options=options)
     servis = getattr(driver, "service", None)
     if servis and servis.process and servis.process.pid:
         _process_joba_ekle(servis.process.pid)
