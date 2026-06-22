@@ -4,11 +4,13 @@ import time
 from deep_translator import GoogleTranslator
 from deep_translator.exceptions import RequestError, TranslationNotFound
 
-MAX_PARCA = 4500
+MAX_PARCA = 2200
 CEVIRI_DENEME = 5
 CEVIRI_TAM_TUR = 3
-CEVIRI_BEKLEME_SN = 2
-PARCA_ARASI_BEKLEME_SN = 3
+CEVIRI_BEKLEME_SN = 3
+PARCA_ARASI_BEKLEME_SN = 5
+
+CUMLE_AYIRICI = re.compile(r"(?<=[.!?;])\s+")
 
 TURKCE_ISARETLER = [
     "Alıcı", "Sonuç", "Tedarik", "Başlık", "E-posta", "Süre", "İhale",
@@ -63,23 +65,68 @@ def _kaynak_dil(metin: str) -> str:
     return "auto"
 
 
-def _metin_parcala(metin: str, max_uzunluk: int = MAX_PARCA) -> list[str]:
-    parcalar = []
-    mevcut = ""
+def _uzun_blok_bol(blok: str, max_uzunluk: int) -> list[str]:
+    """Tek bloğu cümle, kelime ve son çare karakter sınırında parçalar."""
+    if len(blok) <= max_uzunluk:
+        return [blok]
 
-    for satir in metin.splitlines():
-        if len(satir) > max_uzunluk:
+    parcalar: list[str] = []
+    cumleler = CUMLE_AYIRICI.split(blok)
+    if len(cumleler) == 1:
+        mevcut = ""
+        for kelime in blok.split():
+            ek = kelime if not mevcut else f" {kelime}"
+            if len(mevcut) + len(ek) > max_uzunluk:
+                if mevcut:
+                    parcalar.append(mevcut)
+                if len(kelime) > max_uzunluk:
+                    for baslangic in range(0, len(kelime), max_uzunluk):
+                        parcalar.append(kelime[baslangic : baslangic + max_uzunluk])
+                    mevcut = ""
+                else:
+                    mevcut = kelime
+            else:
+                mevcut += ek
+        if mevcut:
+            parcalar.append(mevcut)
+        return parcalar
+
+    mevcut = ""
+    for cumle in cumleler:
+        if len(cumle) > max_uzunluk:
             if mevcut:
                 parcalar.append(mevcut)
                 mevcut = ""
-            for baslangic in range(0, len(satir), max_uzunluk):
-                parcalar.append(satir[baslangic : baslangic + max_uzunluk])
+            parcalar.extend(_uzun_blok_bol(cumle, max_uzunluk))
             continue
 
-        eklenecek = satir if not mevcut else f"\n{satir}"
+        ek = cumle if not mevcut else f" {cumle}"
+        if len(mevcut) + len(ek) > max_uzunluk:
+            parcalar.append(mevcut)
+            mevcut = cumle
+        else:
+            mevcut += ek
+
+    if mevcut:
+        parcalar.append(mevcut)
+    return parcalar
+
+
+def _metin_parcala(metin: str, max_uzunluk: int = MAX_PARCA) -> list[str]:
+    segmentler: list[str] = []
+    for satir in metin.splitlines():
+        if len(satir) <= max_uzunluk:
+            segmentler.append(satir)
+        else:
+            segmentler.extend(_uzun_blok_bol(satir, max_uzunluk))
+
+    parcalar: list[str] = []
+    mevcut = ""
+    for segment in segmentler:
+        eklenecek = segment if not mevcut else f"\n{segment}"
         if len(mevcut) + len(eklenecek) > max_uzunluk:
             parcalar.append(mevcut)
-            mevcut = satir
+            mevcut = segment
         else:
             mevcut += eklenecek
 

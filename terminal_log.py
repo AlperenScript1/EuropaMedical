@@ -65,14 +65,31 @@ class TerminalLog:
         self.kayitlar: list[str] = []
         self.hata_var = False
 
-    def _ekle(self, etiket: str, mesaj: str, renk: str) -> None:
+    def _ekle(
+        self,
+        etiket: str,
+        mesaj: str,
+        renk: str,
+        *,
+        vurgu: str | None = None,
+        vurgu_renk: str = KIRMIZI,
+    ) -> None:
         satir = f"[{etiket}] {mesaj}"
         self.kayitlar.append(satir)
-        print(f"{renk}{satir}{RESET}", flush=True)
+        if vurgu and vurgu in mesaj:
+            idx = mesaj.index(vurgu)
+            on = mesaj[:idx]
+            sonra = mesaj[idx + len(vurgu) :]
+            print(
+                f"{renk}[{etiket}] {on}{vurgu_renk}{vurgu}{renk}{sonra}{RESET}",
+                flush=True,
+            )
+        else:
+            print(f"{renk}{satir}{RESET}", flush=True)
         _banner_satirini_koru()
 
-    def bilgi(self, mesaj: str) -> None:
-        self._ekle("BİLGİ", mesaj, MAVI)
+    def bilgi(self, mesaj: str, *, vurgu: str | None = None) -> None:
+        self._ekle("BİLGİ", mesaj, MAVI, vurgu=vurgu)
 
     def bilgi_mavi(self, mesaj: str) -> None:
         self.bilgi(mesaj)

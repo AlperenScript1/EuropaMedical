@@ -449,7 +449,10 @@ def ilan_verilerini_al(driver, ilan_no):
     ozet = veri.get("summary", "")
     ilan = veri.get("notice", "")
 
-    log.bilgi("Metin Türkçe'ye çevriliyor...")
+    log.bilgi(
+        "Metin Türkçe'ye çevriliyor... [bu işlem uzun sürebilir]",
+        vurgu="[bu işlem uzun sürebilir]",
+    )
     try:
         ozet = metni_turkceye_cevir(ozet) if ozet else ozet
         ilan = metni_turkceye_cevir(ilan) if ilan else ilan
