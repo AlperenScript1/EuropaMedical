@@ -21,7 +21,7 @@ from terminal_log import TerminalLog, konsol_hazirla
 # Chrome görünürlük ayarı:
 #   True  -> headless (pencere açılmaz, sadece terminalde log)
 #   False -> Chrome penceresi ekranda görünür
-ARKA_PLAN = False
+ARKA_PLAN = True
 PROJE_ADI = "Europa_medical_ihaleler"
 
 VERI_KLASORU = Path(__file__).resolve().parent / "Europa_medical_ihaleler_Dosyalari"
