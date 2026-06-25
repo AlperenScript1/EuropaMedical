@@ -47,6 +47,9 @@ function tarihKarsilastir(tarihStr, bugunStr) {
     return parse(tarihStr) - parse(bugunStr);
 }
 
+const sonYayinTarihiRe =
+    /^\\d{2}\\/\\d{2}\\/\\d{4} \\d{2}:\\d{2}:\\d{2} \\(UTC[+-]\\d{2}:\\d{2}\\)$/;
+
 const notices = [];
 const seen = new Set();
 let eskiTarih = false;
@@ -54,7 +57,7 @@ let eskiTarihStr = null;
 
 for (const row of document.querySelectorAll('table tr')) {
     const cells = [...row.querySelectorAll('td')];
-    if (cells.length < 5) continue;
+    if (cells.length < 6) continue;
 
     const pubDate = cells[4].textContent.trim();
     if (!/^\\d{2}\\/\\d{2}\\/\\d{4}$/.test(pubDate)) continue;
@@ -66,6 +69,10 @@ for (const row of document.querySelectorAll('table tr')) {
         continue;
     }
     if (karsilastirma > 0) continue;
+
+    const sonYayinTarihi = cells[5].textContent.trim();
+    if (!sonYayinTarihiRe.test(sonYayinTarihi)) continue;
+
     if (!/medical/i.test(row.innerText)) continue;
 
     const link = row.querySelector('a[href*="/notice/-/detail/"]');
@@ -654,6 +661,9 @@ def main():
         bugun_tarihi = bugunun_ted_tarihi()
         log.bilgi(f"Bugünün klasörü: {bugun.name}")
         log.bilgi(f"Sadece bugünün ihaleleri alınacak: {bugun_tarihi}")
+        log.bilgi(
+            "Son yayınlanma tarihi zorunlu: GG/AA/YYYY SS:DD:SS (UTC±SS:DD)"
+        )
         _driver = tarayici_baslat()  # Chrome açılır
         _driver.get(url)
 
