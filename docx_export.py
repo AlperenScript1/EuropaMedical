@@ -11,10 +11,11 @@ from docx.shared import Emu, Pt, RGBColor
 FONT_ADI = "Times New Roman"
 FONT_BOYUT = Pt(12)
 TABLO_KOLON_GENISLIKLERI = [
-    Emu(750000),   # Sıra No
-    Emu(3600000),  # Cinsi (geniş)
-    Emu(1100000),  # Miktarı
-    Emu(1100000),  # Birim
+    Emu(650000),   # Sıra No
+    Emu(2800000),  # Cinsi
+    Emu(900000),   # Miktarı (bos)
+    Emu(900000),   # Birim (bos)
+    Emu(1800000),  # Açıklama (cpv)
 ]
 
 HARIC_TUTULACAKLAR = [
@@ -101,7 +102,21 @@ def _normalize_satir(satir: str) -> str:
     return satir
 
 
+def _cpv_satir_mi(satir: str) -> bool:
+    if _CPV_KAYNAK_RE.search(satir) or _CPV_TR_RE.search(satir):
+        return True
+    if re.search(r"cpv\s*:\s*\d{8,9}", satir, re.IGNORECASE):
+        return True
+    if re.search(r"(?:Main|Additional)\s+classification", satir, re.IGNORECASE):
+        return True
+    if re.search(r"(?:Ana|Ek)\s+sınıflandırma", satir, re.IGNORECASE):
+        return True
+    return False
+
+
 def _haric_mi(satir: str) -> bool:
+    if _cpv_satir_mi(satir):
+        return True
     if not satir.strip():
         return True
     if satir.strip() in {"=== ÖZET ===", "=== İLAN ==="}:
@@ -169,8 +184,12 @@ def _form_turu_bul(summary: str, notice: str) -> str:
 def _ihale_basligi_bul(summary: str, notice: str) -> str:
     metin = f"{summary}\n{notice}"
     lot = _alan_bul(r"LOT-0001\s*:\s*(.+)", metin)
-    if lot:
+    if lot and not _lot_aciklamasi_cinsi_degil_mi(lot):
         return _bas_harf_buyuk(lot)
+
+    ozet_baslik = _ozet_cinsi_basligi_bul(summary, notice)
+    if ozet_baslik:
+        return ozet_baslik
 
     for ham in summary.splitlines():
         satir = _normalize_satir(ham)
@@ -197,7 +216,7 @@ _CPV_KAYNAK_RE = re.compile(
 )
 
 _CPV_TR_RE = re.compile(
-    r"(Ana|Ek)\s+sınıflandırma\s*\(\s*cpv\s*\)\s*:\s*(\d{8,9})\s+(.+)",
+    r"(Ana|Ek)\s+sınıflandırma\s*\(\s*cpv\s*:\s*(\d{8,9})\s+(.+)",
     re.IGNORECASE,
 )
 
@@ -255,24 +274,25 @@ def cpv_satirini_cevir(cpv_eng: str) -> str:
     return f"{etiket}(cpv: {kod}  {aciklama_tr})"
 
 
-def _sadece_cpv_notice_mi(notice: str) -> bool:
-    return bool(_CPV_KAYNAK_RE.search(notice) or _CPV_TR_RE.search(notice))
-
-
-def _govdeye_cpv_ekle(satirlar: list[str], cpv: str) -> list[str]:
-    if not cpv:
-        return satirlar
-    yeni: list[str] = []
-    eklendi = False
-    for satir in satirlar:
-        if _CPV_KAYNAK_RE.search(satir) or _CPV_TR_RE.search(satir):
-            yeni.append(cpv)
-            eklendi = True
-        else:
-            yeni.append(satir)
-    if not eklendi:
-        yeni.append(cpv)
-    return yeni
+def _cpv_tablo_aciklamasi(cpv_satir: str) -> str:
+    """Tablo Aciklama sutunu: 66512220 Saglik Sigortasi Hizmetleri"""
+    cpv_satir = (cpv_satir or "").strip()
+    if not cpv_satir:
+        return ""
+    for regex in (_CPV_KAYNAK_RE, _CPV_TR_RE):
+        match = regex.search(cpv_satir)
+        if match:
+            kod = match.group(2)
+            aciklama = match.group(3).strip().rstrip(")")
+            return f"{kod} {_bas_harf_buyuk(aciklama)}"
+    match = re.search(r"cpv\s*:\s*(\d{8,9})\s+(.+)", cpv_satir, re.IGNORECASE)
+    if match:
+        aciklama = match.group(2).strip().rstrip(")")
+        return f"{match.group(1)} {_bas_harf_buyuk(aciklama)}"
+    match = re.search(r"(\d{8,9})\s+(.+)", cpv_satir)
+    if match:
+        return f"{match.group(1)} {_bas_harf_buyuk(match.group(2).strip())}"
+    return ""
 
 
 _OZET_ATLANACAK_BASLIKLAR = {
@@ -466,6 +486,55 @@ def _ana_baslik_bul(summary: str) -> str:
     return ""
 
 
+_NOTICE_REF_RE = re.compile(
+    r"^(?:bildirim|notice|avis|bekanntmachung|anuncio)\s+\d{1,6}/\d{4}$",
+    re.IGNORECASE,
+)
+
+
+def _lot_aciklamasi_cinsi_degil_mi(aciklama: str) -> bool:
+    """LOT satiri bildirim numarasi gibi ise tablo cinsi olarak kullanilmaz."""
+    aciklama = aciklama.strip()
+    if not aciklama:
+        return True
+    if _NOTICE_REF_RE.match(aciklama):
+        return True
+    if len(aciklama) <= 30 and re.search(r"\d+/\d{4}", aciklama):
+        if re.search(r"bildirim|notice|avis", aciklama, re.IGNORECASE):
+            return True
+    return False
+
+
+def _ozet_cinsi_basligi_bul(summary: str, notice: str) -> str:
+    """Ozetten gercek ihale konusunu bulur (ulke satiri veya konu aciklamasi)."""
+    for kaynak in (summary, notice):
+        for ham in kaynak.splitlines():
+            satir = _normalize_satir(ham)
+            if not satir or _haric_mi(satir):
+                continue
+            if satir.startswith("LOT-"):
+                continue
+
+            ulke_match = re.match(
+                r"^[\wğüşıöçĞÜŞİÖÇ]+\s*[:\–-]\s*(.+)$", satir, re.IGNORECASE
+            )
+            if ulke_match:
+                icerik = ulke_match.group(1).strip()
+                if len(icerik) >= 10 and not _lot_aciklamasi_cinsi_degil_mi(icerik):
+                    return _bas_harf_buyuk(icerik)
+                continue
+
+            if re.fullmatch(r"\d+\.\s+[^:\.]+", satir):
+                continue
+            if 10 <= len(satir) <= 160 and not _lot_aciklamasi_cinsi_degil_mi(satir):
+                harfler = [c for c in satir if c.isalpha()]
+                if len(harfler) >= 8:
+                    buyuk_oran = sum(1 for c in harfler if c.isupper()) / len(harfler)
+                    if buyuk_oran < 0.85:
+                        return _bas_harf_buyuk(satir)
+    return ""
+
+
 def _lot_aciklamalari(summary: str, notice: str) -> list[str]:
     metin = f"{summary}\n{notice}"
     lotlar: dict[str, str] = {}
@@ -491,22 +560,20 @@ def _tablo_cinsi_bul(summary: str, notice: str, ihale_basligi: str) -> str:
             return ana_baslik
 
     if len(lotlar) == 1:
-        return _bas_harf_buyuk(lotlar[0])
+        lot = lotlar[0]
+        if not _lot_aciklamasi_cinsi_degil_mi(lot):
+            return _bas_harf_buyuk(lot)
 
-    if ihale_basligi:
+    ozet_baslik = _ozet_cinsi_basligi_bul(summary, notice)
+    if ozet_baslik:
+        return ozet_baslik
+
+    if ihale_basligi and not _lot_aciklamasi_cinsi_degil_mi(ihale_basligi):
         return ihale_basligi
 
     ana_baslik = _ana_baslik_bul(summary)
     if ana_baslik:
         return ana_baslik
-
-    metin = f"{summary}\n{notice}"
-    for _, aciklama in re.findall(
-        r"(?:cpv\)|CPV\)|sınıflandırma\s*\(\s*cpv\s*\))\s*:\s*(\d{8,9})\s+(.+)",
-        metin,
-        re.IGNORECASE,
-    ):
-        return _bas_harf_buyuk(aciklama.strip())
 
     return ""
 
@@ -571,21 +638,22 @@ def _tablo_miktar_birim_bul(summary: str, notice: str) -> tuple[str, str]:
     return "1", "Adet"
 
 
-def _tablo_satirlari(summary: str, notice: str, ihale_basligi: str) -> list[tuple[str, str, str, str]]:
+def _tablo_satirlari(
+    summary: str,
+    notice: str,
+    ihale_basligi: str,
+    cpv_satir: str = "",
+) -> list[tuple[str, str, str, str, str]]:
     lot_sayisi = len(_lot_aciklamalari(summary, notice))
     cinsi_ham = _tablo_cinsi_bul(summary, notice, ihale_basligi)
     if not cinsi_ham:
         return []
 
-    cinsi, miktar, birim = _cinsi_miktar_ayir(cinsi_ham)
+    cinsi, _, _ = _cinsi_miktar_ayir(cinsi_ham)
     if lot_sayisi <= 1:
         cinsi = _cinsi_kisalt(cinsi)
-    if miktar == "1":
-        govde_miktar, govde_birim = _tablo_miktar_birim_bul(summary, notice)
-        if govde_miktar != "1":
-            miktar, birim = govde_miktar, govde_birim
 
-    return [("1", cinsi, miktar, birim)]
+    return [("1", cinsi, "", "", _cpv_tablo_aciklamasi(cpv_satir))]
 
 
 def _varsayilan_yazi_tipi_ayarla(doc: Document):
@@ -683,12 +751,24 @@ def _paragraf_ekle(doc: Document, satir: str, ortala: bool = False):
     return paragraf
 
 
+def _tablo_hucre_metni(metin: str | None) -> str:
+    if metin is None:
+        return ""
+    s = str(metin).strip()
+    if s.lower() in ("null", "none", "undefined"):
+        return ""
+    return s
+
+
 def _hucre_yaz(hucre, metin: str, kalin: bool = False):
+    metin = _tablo_hucre_metni(metin)
     hucre.text = ""
     hucre.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
     paragraf = hucre.paragraphs[0]
     paragraf.paragraph_format.space_before = Pt(0)
     paragraf.paragraph_format.space_after = Pt(0)
+    if not metin:
+        return
     run = paragraf.add_run(metin)
     run.font.name = FONT_ADI
     run.font.size = FONT_BOYUT
@@ -696,12 +776,12 @@ def _hucre_yaz(hucre, metin: str, kalin: bool = False):
     run.font.color.rgb = RGBColor(0, 0, 0)
 
 
-def _tablo_ekle(doc: Document, satirlar: list[tuple[str, str, str, str]]):
-    tablo = doc.add_table(rows=1 + len(satirlar), cols=4)
+def _tablo_ekle(doc: Document, satirlar: list[tuple[str, str, str, str, str]]):
+    tablo = doc.add_table(rows=1 + len(satirlar), cols=5)
     tablo.style = "Table Grid"
     tablo.autofit = False
 
-    basliklar = ["Sıra No", "Cinsi", "Miktarı", "Birim"]
+    basliklar = ["Sıra No", "Cinsi", "Miktarı", "Birim", "Açıklama"]
     for ci, baslik in enumerate(basliklar):
         genislik = TABLO_KOLON_GENISLIKLERI[ci]
         tablo.columns[ci].width = genislik
@@ -763,10 +843,8 @@ def docx_olustur(
     govde_satirlari = _ozet_satirlari(summary, ilan_metni, form_turu, ihale_basligi)
     if notice.strip():
         govde_satirlari.extend(_org_ve_bildirim_satirlari(ilan_metni))
-    if cpv_satir.strip():
-        govde_satirlari = _govdeye_cpv_ekle(govde_satirlari, cpv_satir.strip())
 
-    tablo_satirlari = _tablo_satirlari(summary, ilan_metni, ihale_basligi)
+    tablo_satirlari = _tablo_satirlari(summary, ilan_metni, ihale_basligi, cpv_satir)
 
     doc = Document()
     _varsayilan_yazi_tipi_ayarla(doc)
