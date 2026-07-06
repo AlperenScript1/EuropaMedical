@@ -15,6 +15,48 @@ function Write-Ok($msg)    { Write-Host $msg -ForegroundColor Green }
 function Write-Warn($msg)  { Write-Host $msg -ForegroundColor Yellow }
 function Write-Err($msg)   { Write-Host $msg -ForegroundColor Red }
 
+function Invoke-Pip {
+    param(
+        [string]$PythonPath,
+        [string[]]$Arguments
+    )
+
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $output = & $PythonPath -m pip @Arguments 2>&1
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
+
+    [PSCustomObject]@{
+        Output   = $output
+        ExitCode = $code
+    }
+}
+
+function Invoke-Python {
+    param(
+        [string]$PythonPath,
+        [string[]]$Arguments
+    )
+
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $output = & $PythonPath @Arguments 2>&1
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
+
+    [PSCustomObject]@{
+        Output   = $output
+        ExitCode = $code
+    }
+}
+
 function Test-PythonExe {
     param([string]$Path)
     if (-not (Test-Path $Path)) { return $false }
@@ -66,19 +108,15 @@ function Configure-EmbeddedPython {
     }
 
     # pip yoksa kur
-    $pipOk = $false
-    try {
-        $null = & $EmbedPython -m pip --version 2>&1
-        $pipOk = $LASTEXITCODE -eq 0
-    } catch {}
+    $pipOk = (Invoke-Pip $EmbedPython @("--version")).ExitCode -eq 0
 
     if (-not $pipOk) {
         Write-Info "pip kuruluyor..."
         $getPip = Join-Path $env:TEMP "get-pip.py"
         try {
             Invoke-WebRequest -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile $getPip -UseBasicParsing
-            & $EmbedPython $getPip --no-warn-script-location 2>&1 | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw "get-pip basarisiz" }
+            $getPipResult = Invoke-Python $EmbedPython @($getPip, "--no-warn-script-location")
+            if ($getPipResult.ExitCode -ne 0) { throw "get-pip basarisiz" }
         } catch {
             Write-Err "pip kurulamadi: $($_.Exception.Message)"
             exit 1
@@ -113,8 +151,10 @@ function Test-IsEmbedPython {
 
 function Install-PipToolchain {
     param([string]$PythonPath)
-    $null = & $PythonPath -m pip install --upgrade pip setuptools wheel 2>&1
-    return $LASTEXITCODE -eq 0
+    $result = Invoke-Pip $PythonPath @(
+        "install", "--upgrade", "pip", "setuptools", "wheel", "--no-warn-script-location"
+    )
+    return $result.ExitCode -eq 0
 }
 
 function Test-EmbeddedPythonHealthy {
@@ -293,21 +333,25 @@ function Install-Requirements {
     }
 
     Write-Info "Gerekli paketler yukleniyor (ilk seferde biraz surebilir)..."
-    $pipOut = & $PythonPath -m pip install -r $reqFile --prefer-binary 2>&1
-    if ($LASTEXITCODE -ne 0 -and (Test-IsEmbedPython $PythonPath)) {
+    $pipResult = Invoke-Pip $PythonPath @(
+        "install", "-r", $reqFile, "--prefer-binary", "--no-warn-script-location"
+    )
+    if ($pipResult.ExitCode -ne 0 -and (Test-IsEmbedPython $PythonPath)) {
         Write-Warn "Paket kurulumu basarisiz; gomulu Python sifirlanip tekrar deneniyor..."
         Reset-EmbeddedSitePackages
         if (-not (Install-PipToolchain $EmbedPython)) {
             Write-Err "pip/setuptools kurulumu basarisiz."
             exit 1
         }
-        $pipOut = & $EmbedPython -m pip install -r $reqFile --prefer-binary 2>&1
+        $pipResult = Invoke-Pip $EmbedPython @(
+            "install", "-r", $reqFile, "--prefer-binary", "--no-warn-script-location"
+        )
         $PythonPath = $EmbedPython
     }
 
-    if ($LASTEXITCODE -ne 0) {
+    if ($pipResult.ExitCode -ne 0) {
         Write-Err "Paket kurulumu basarisiz. Internet baglantinizi kontrol edip tekrar deneyin."
-        $pipOut | ForEach-Object { Write-Host $_ }
+        $pipResult.Output | ForEach-Object { Write-Host $_ }
         exit 1
     }
     Write-Ok "Tum paketler yuklendi."
