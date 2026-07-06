@@ -7,6 +7,11 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+# Gomulu Python bazen proje klasorunu sys.path'e eklemez; yerel moduller icin gerekli.
+_PROJE_KOKU = Path(__file__).resolve().parent
+if str(_PROJE_KOKU) not in sys.path:
+    sys.path.insert(0, str(_PROJE_KOKU))
+
 from cevir import CeviriBasarisizError, metin_turkce_mi, metni_turkceye_cevir
 from docx_export import docx_olustur
 from selenium.common.exceptions import TimeoutException

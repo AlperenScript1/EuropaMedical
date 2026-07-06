@@ -28,7 +28,18 @@ if not defined PY_EXE (
     exit /b 1
 )
 
-"%PY_EXE%" -u app.py
+for %%F in (app.py cevir.py docx_export.py terminal_log.py word_makro.py requirements.txt setup.ps1) do (
+    if not exist "%%F" (
+        echo.
+        echo HATA: %%F bulunamadi. Tum proje dosyalarini ayni klasore kopyalayin.
+        echo.
+        pause
+        exit /b 1
+    )
+)
+
+set "PYTHONPATH=%~dp0"
+"%PY_EXE%" -u "%~dp0app.py"
 if exist calisma.pid del calisma.pid >nul 2>&1
 echo.
 pause
