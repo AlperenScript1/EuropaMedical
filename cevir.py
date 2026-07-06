@@ -1,14 +1,16 @@
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from deep_translator import GoogleTranslator
 from deep_translator.exceptions import RequestError, TranslationNotFound
 
-MAX_PARCA = 2200
-CEVIRI_DENEME = 5
-CEVIRI_TAM_TUR = 3
-CEVIRI_BEKLEME_SN = 3
-PARCA_ARASI_BEKLEME_SN = 5
+MAX_PARCA = 4500
+CEVIRI_DENEME = 4
+CEVIRI_TAM_TUR = 2
+CEVIRI_BEKLEME_SN = 2
+PARCA_ARASI_BEKLEME_SN = 0.4
+PARCA_PARALEL_ISCI = 3
 
 CUMLE_AYIRICI = re.compile(r"(?<=[.!?;])\s+")
 
@@ -153,16 +155,40 @@ def _parca_cevir(cevirici: GoogleTranslator, parca: str) -> str:
 
 def _ham_metni_cevir(metin: str) -> str:
     kaynak = _kaynak_dil(metin)
-    cevirici = GoogleTranslator(source=kaynak, target="tr")
-    cevrilmis: list[str] = []
-
     parcalar = _metin_parcala(metin)
-    for parca_no, parca in enumerate(parcalar):
-        if parca_no > 0:
-            time.sleep(PARCA_ARASI_BEKLEME_SN)
-        cevrilmis.append(_parca_cevir(cevirici, parca))
+    if not parcalar:
+        return ""
 
-    return "\n".join(cevrilmis)
+    if len(parcalar) == 1:
+        cevirici = GoogleTranslator(source=kaynak, target="tr")
+        return _parca_cevir(cevirici, parcalar[0])
+
+    def _parca_isle(idx_parca: tuple[int, str]) -> tuple[int, str]:
+        idx, parca = idx_parca
+        if idx > 0 and PARCA_ARASI_BEKLEME_SN:
+            time.sleep(PARCA_ARASI_BEKLEME_SN * idx)
+        cevirici = GoogleTranslator(source=kaynak, target="tr")
+        return idx, _parca_cevir(cevirici, parca)
+
+    isci = min(PARCA_PARALEL_ISCI, len(parcalar))
+    with ThreadPoolExecutor(max_workers=isci) as havuz:
+        sonuclar = list(havuz.map(_parca_isle, enumerate(parcalar)))
+
+    sonuclar.sort(key=lambda x: x[0])
+    return "\n".join(metin for _, metin in sonuclar)
+
+
+def metinleri_turkceye_cevir(*metinler: str) -> list[str]:
+    """Birden fazla metni paralel cevirir."""
+    if not metinler:
+        return []
+
+    def _cevir(metin: str) -> str:
+        return metni_turkceye_cevir(metin) if metin.strip() else ""
+
+    isci = min(PARCA_PARALEL_ISCI, max(1, sum(1 for m in metinler if m.strip())))
+    with ThreadPoolExecutor(max_workers=isci) as havuz:
+        return list(havuz.map(_cevir, metinler))
 
 
 def metni_turkceye_cevir(metin: str) -> str:

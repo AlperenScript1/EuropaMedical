@@ -12,8 +12,8 @@ _PROJE_KOKU = Path(__file__).resolve().parent
 if str(_PROJE_KOKU) not in sys.path:
     sys.path.insert(0, str(_PROJE_KOKU))
 
-from cevir import CeviriBasarisizError, metin_turkce_mi, metni_turkceye_cevir
-from docx_export import cpv_kaynak_satir_bul, cpv_satirini_cevir, docx_olustur
+from cevir import CeviriBasarisizError, metinleri_turkceye_cevir, metni_turkceye_cevir
+from docx_export import cpv_kaynak_satir_bul, cpv_satirini_cevir, docx_olustur, notice_org_bildirim_metni
 from selenium.common.exceptions import TimeoutException
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -133,10 +133,23 @@ function accordionBul(parca) {
         || document.querySelector('[id*="' + parca + '" i]');
 }
 
+function summaryBul() {
+    let el = accordionBul('summary-accordion') || accordionBul('summary');
+    if (el) return el;
+    for (const baslik of document.querySelectorAll('button, h2, h3, h4, [class*="AccordionSummary"]')) {
+        const t = (baslik.textContent || '').trim();
+        if (/^summary$/i.test(t) || /^özet$/i.test(t)) {
+            return baslik.closest('[id*="accordion" i]') || baslik.parentElement;
+        }
+    }
+    return null;
+}
+
 function accordionGovdesi(root) {
     if (!root) return '';
-    const details = root.querySelector('[class*="AccordionDetails"]');
-    return (details || root).innerText.trim();
+    let metin = (root.innerText || '').trim();
+    metin = metin.replace(/^Summary\\s*\\n?/i, '').replace(/^Özet\\s*\\n?/i, '').trim();
+    return metin;
 }
 
 function cpvSatiriniBul(metin) {
@@ -160,8 +173,11 @@ function cpvSatiriniBul(metin) {
     return '';
 }
 
-const summaryRoot = accordionBul('summary-accordion') || accordionBul('summary');
+const summaryRoot = summaryBul();
 const noticeRoot = accordionBul('notice-accordion') || accordionBul('notice');
+if (summaryRoot) {
+    summaryRoot.scrollIntoView({ block: 'start' });
+}
 const noticeMetin = accordionGovdesi(noticeRoot);
 
 return {
@@ -547,6 +563,12 @@ def ilan_verilerini_al(driver, ilan_no):
     time.sleep(0.5)
     driver.execute_script(ACCORDION_GENISLET_JS)
     time.sleep(0.5)
+    driver.execute_script("""
+        const s = document.getElementById('summary-accordion')
+            || document.querySelector('[id*="summary-accordion" i], [id*="summary" i][id*="accordion" i]');
+        if (s) s.scrollIntoView({ block: 'start' });
+    """)
+    time.sleep(0.3)
     veri = driver.execute_script(ILAN_VERISI_JS)
 
     ozet_eng = _footer_temizle(veri.get("summary", "") if veri else "")
@@ -562,23 +584,28 @@ def ilan_verilerini_al(driver, ilan_no):
     if not cpv_eng and notice_eng:
         cpv_eng = cpv_kaynak_satir_bul(notice_eng)
 
-    if ozet_eng:
-        log.bilgi(
-            "Özet metni Türkçe'ye çevriliyor... [bu işlem uzun sürebilir]",
-            vurgu="[bu işlem uzun sürebilir]",
-        )
-        try:
-            ozet_tr = metni_turkceye_cevir(ozet_eng)
-        except CeviriBasarisizError as e:
-            raise RuntimeError(f"Çevirilemedi: {ilan_no}") from e
+    notice_ceviri_eng = notice_org_bildirim_metni(notice_eng) if notice_eng else ""
 
-    if notice_eng:
+    cevrilecek = []
+    ceviri_anahtarlari = []
+    if ozet_eng:
+        cevrilecek.append(ozet_eng)
+        ceviri_anahtarlari.append("ozet")
+    if notice_ceviri_eng:
+        cevrilecek.append(notice_ceviri_eng)
+        ceviri_anahtarlari.append("notice")
+
+    if cevrilecek:
         log.bilgi(
-            "İlan (notice) metni Türkçe'ye çevriliyor... [bu işlem uzun sürebilir]",
+            "Metinler Türkçe'ye çevriliyor... [bu işlem uzun sürebilir]",
             vurgu="[bu işlem uzun sürebilir]",
         )
         try:
-            notice_tr = metni_turkceye_cevir(notice_eng)
+            ceviri_sonuclari = dict(
+                zip(ceviri_anahtarlari, metinleri_turkceye_cevir(*cevrilecek))
+            )
+            ozet_tr = ceviri_sonuclari.get("ozet", "")
+            notice_tr = ceviri_sonuclari.get("notice", "")
         except CeviriBasarisizError as e:
             raise RuntimeError(f"Çevirilemedi: {ilan_no}") from e
 

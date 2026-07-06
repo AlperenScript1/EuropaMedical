@@ -275,31 +275,33 @@ def _govdeye_cpv_ekle(satirlar: list[str], cpv: str) -> list[str]:
     return yeni
 
 
+_OZET_ATLANACAK_BASLIKLAR = {
+    "summary", "özet", "notice", "languages and formats", "diller ve formatlar",
+}
+
+
 def _ozet_satirlari(
     summary: str, notice: str, form_turu: str, ihale_basligi: str
 ) -> list[str]:
-    tablo_cinsi_ham = _tablo_cinsi_bul(summary, notice, ihale_basligi)
-    tablo_cinsi, _, _ = _cinsi_miktar_ayir(tablo_cinsi_ham) if tablo_cinsi_ham else ("", "1", "Adet")
-
     satirlar = []
     for ham in summary.splitlines():
         satir = _normalize_satir(ham)
         if _haric_mi(satir):
             continue
-        if satir.upper() == form_turu.upper():
-            continue
-        if ihale_basligi and satir.upper() == ihale_basligi.upper():
-            continue
-        if tablo_cinsi and _bas_harf_buyuk(satir).upper() == tablo_cinsi.upper():
-            continue
-        if tablo_cinsi_ham and _bas_harf_buyuk(satir).upper() == tablo_cinsi_ham.upper():
-            continue
-        if _birlesik_tirnakli_satir_mi(satir):
-            continue
-        if re.fullmatch(r"\d+\.\s+[^:\.]+", satir):
+        if satir.lower() in _OZET_ATLANACAK_BASLIKLAR:
             continue
         satirlar.append(satir)
     return satirlar
+
+
+def notice_org_bildirim_metni(notice: str) -> str:
+    """Notice'dan Word'e girecek ORG ve Bildirim bolumlerini ayiklar."""
+    if not notice.strip():
+        return ""
+    satirlar = _org_ve_bildirim_satirlari(notice)
+    if satirlar:
+        return "\n".join(satirlar)
+    return notice
 
 
 def _org_ve_bildirim_satirlari(notice: str) -> list[str]:
