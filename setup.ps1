@@ -92,7 +92,48 @@ function Configure-EmbeddedPython {
         exit 1
     }
 
+    Install-PipToolchain $EmbedPython | Out-Null
+
     return $EmbedPython
+}
+
+function Test-IsEmbedPython {
+    param([string]$PythonPath)
+    if (-not (Test-Path $PythonPath) -or -not (Test-Path $EmbedPython)) {
+        return $false
+    }
+    try {
+        $a = (Resolve-Path -LiteralPath $PythonPath).Path.ToLowerInvariant()
+        $b = (Resolve-Path -LiteralPath $EmbedPython).Path.ToLowerInvariant()
+        return $a -eq $b
+    } catch {
+        return $false
+    }
+}
+
+function Install-PipToolchain {
+    param([string]$PythonPath)
+    $null = & $PythonPath -m pip install --upgrade pip setuptools wheel 2>&1
+    return $LASTEXITCODE -eq 0
+}
+
+function Test-EmbeddedPythonHealthy {
+    if (-not (Test-PythonExe $EmbedPython)) { return $false }
+    try {
+        $null = & $EmbedPython -c "import pip, setuptools" 2>&1
+        return $LASTEXITCODE -eq 0
+    } catch {
+        return $false
+    }
+}
+
+function Reset-EmbeddedSitePackages {
+    Write-Warn "Gomulu Python paketleri temizleniyor..."
+    $sitePackages = Join-Path $EmbedDir "Lib\site-packages"
+    if (Test-Path $sitePackages) {
+        Get-ChildItem -Path $sitePackages -Force | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    Configure-EmbeddedPython | Out-Null
 }
 
 function Find-SystemPython {
@@ -204,6 +245,13 @@ function Resolve-Python {
 
     if (Test-PythonExe $EmbedPython) {
         Write-Ok "Proje icindeki Python bulundu."
+        if (-not (Test-EmbeddedPythonHealthy)) {
+            Write-Warn "Gomulu Python baska bilgisayardan kopyalanmis olabilir; yeniden hazirlaniyor..."
+            Configure-EmbeddedPython | Out-Null
+            if (-not (Test-EmbeddedPythonHealthy)) {
+                Reset-EmbeddedSitePackages
+            }
+        }
         if (Test-VenvModule $EmbedPython) {
             return (Ensure-Venv $EmbedPython)
         }
@@ -228,14 +276,42 @@ function Install-Requirements {
         exit 1
     }
 
+    Write-Info "Temel araclar kuruluyor (pip, setuptools, wheel)..."
+    if (-not (Install-PipToolchain $PythonPath)) {
+        if (Test-IsEmbedPython $PythonPath) {
+            Write-Warn "pip araclari kurulamadi, gomulu Python temizleniyor..."
+            Reset-EmbeddedSitePackages
+            if (-not (Install-PipToolchain $EmbedPython)) {
+                Write-Err "pip/setuptools kurulumu basarisiz."
+                exit 1
+            }
+            $PythonPath = $EmbedPython
+        } else {
+            Write-Err "pip/setuptools kurulumu basarisiz."
+            exit 1
+        }
+    }
+
     Write-Info "Gerekli paketler yukleniyor (ilk seferde biraz surebilir)..."
-    & $PythonPath -m pip install --upgrade pip --quiet 2>&1 | Out-Null
-    & $PythonPath -m pip install -r $reqFile --quiet
+    $pipOut = & $PythonPath -m pip install -r $reqFile --prefer-binary 2>&1
+    if ($LASTEXITCODE -ne 0 -and (Test-IsEmbedPython $PythonPath)) {
+        Write-Warn "Paket kurulumu basarisiz; gomulu Python sifirlanip tekrar deneniyor..."
+        Reset-EmbeddedSitePackages
+        if (-not (Install-PipToolchain $EmbedPython)) {
+            Write-Err "pip/setuptools kurulumu basarisiz."
+            exit 1
+        }
+        $pipOut = & $EmbedPython -m pip install -r $reqFile --prefer-binary 2>&1
+        $PythonPath = $EmbedPython
+    }
+
     if ($LASTEXITCODE -ne 0) {
         Write-Err "Paket kurulumu basarisiz. Internet baglantinizi kontrol edip tekrar deneyin."
+        $pipOut | ForEach-Object { Write-Host $_ }
         exit 1
     }
     Write-Ok "Tum paketler yuklendi."
+    return $PythonPath
 }
 
 # --- Ana akis ---
@@ -245,7 +321,7 @@ Write-Host ""
 
 $pythonToUse = Resolve-Python
 
-Install-Requirements $pythonToUse
+$pythonToUse = Install-Requirements $pythonToUse
 
 # calistir.bat hangi Python'u kullanacagini bilsin
 $launcherHint = Join-Path $Root ".python-path"
