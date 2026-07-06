@@ -13,7 +13,7 @@ if str(_PROJE_KOKU) not in sys.path:
     sys.path.insert(0, str(_PROJE_KOKU))
 
 from cevir import CeviriBasarisizError, metin_turkce_mi, metni_turkceye_cevir
-from docx_export import docx_olustur
+from docx_export import cpv_kaynak_satir_bul, cpv_satirini_cevir, docx_olustur
 from selenium.common.exceptions import TimeoutException
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -97,19 +97,94 @@ BASLANGIC_MESAJI = (
     "Dosyalar günlük klasörlerde biriktirilir. Daha önce alınan ilanlar tekrar alınmaz."
 )
 
+ACCORDION_GENISLET_JS = """
+(function () {
+    let expanded = 0;
+    const seen = new Set();
+    for (const btn of document.querySelectorAll('button[aria-expanded="false"]')) {
+        if (seen.has(btn)) continue;
+        seen.add(btn);
+        btn.click();
+        expanded++;
+    }
+    return expanded;
+})();
+"""
+
 ILAN_VERISI_JS = """
-function accordionMetni(id) {
-    const acc = document.getElementById(id);
-    if (!acc) return null;
-    const details = acc.querySelector('[class*="AccordionDetails"]');
-    return (details || acc).innerText.trim();
+const FOOTER_BASLANGIC = 'This website is managed by:';
+
+function footerKaldir(metin) {
+    if (!metin) return '';
+    const idx = metin.indexOf(FOOTER_BASLANGIC);
+    if (idx !== -1) return metin.substring(0, idx).trim();
+    return metin.trim();
 }
 
+function footerElemaniMi(el) {
+    if (!el) return false;
+    return !!el.closest(
+        'footer, [role="contentinfo"], [class*="site-footer" i], [class*="SiteFooter" i], [id*="site-footer" i]'
+    );
+}
+
+function accordionBul(parca) {
+    return document.getElementById(parca)
+        || document.querySelector('[id*="' + parca + '" i]');
+}
+
+function accordionGovdesi(root) {
+    if (!root) return '';
+    const details = root.querySelector('[class*="AccordionDetails"]');
+    return (details || root).innerText.trim();
+}
+
+function cpvSatiriniBul(metin) {
+    if (!metin) return '';
+    const mainRx = /Main classification\\s*\\(\\s*cpv\\s*\\)\\s*:\\s*(\\d{8,9})\\s+(.+)/i;
+    const addRx = /Additional classification\\s*\\(\\s*cpv\\s*\\)\\s*:\\s*(\\d{8,9})\\s+(.+)/i;
+    for (const line of metin.split('\\n')) {
+        const t = line.trim();
+        const m = t.match(mainRx);
+        if (m) return 'Main classification (cpv): ' + m[1] + ' ' + m[2].trim();
+    }
+    for (const line of metin.split('\\n')) {
+        const t = line.trim();
+        const a = t.match(addRx);
+        if (a) return 'Additional classification (cpv): ' + a[1] + ' ' + a[2].trim();
+    }
+    const m = metin.match(mainRx);
+    if (m) return 'Main classification (cpv): ' + m[1] + ' ' + m[2].trim();
+    const a = metin.match(addRx);
+    if (a) return 'Additional classification (cpv): ' + a[1] + ' ' + a[2].trim();
+    return '';
+}
+
+const summaryRoot = accordionBul('summary-accordion') || accordionBul('summary');
+const noticeRoot = accordionBul('notice-accordion') || accordionBul('notice');
+const noticeMetin = accordionGovdesi(noticeRoot);
+
 return {
-    summary: accordionMetni('summary-accordion'),
-    notice: accordionMetni('notice-accordion'),
+    summary: footerKaldir(accordionGovdesi(summaryRoot)),
+    notice: footerKaldir(noticeMetin),
+    cpvSatir: cpvSatiriniBul(noticeMetin),
 };
 """
+
+FOOTER_METIN_ISARETLERI = (
+    "This website is managed by:",
+)
+
+
+def _footer_temizle(metin: str) -> str:
+    """Sayfa metninden TED sitesi footer bloğunu keser."""
+    if not metin:
+        return metin
+    for isaret in FOOTER_METIN_ISARETLERI:
+        idx = metin.find(isaret)
+        if idx != -1:
+            return metin[:idx].strip()
+    return metin.strip()
 
 
 def _pid_kaydet():
@@ -456,29 +531,63 @@ def sayfayi_asagi_yukari_kaydir(driver):
     driver.execute_script("window.scrollTo(0, 0);")
 
 
+def _ilan_url_al(driver, ilan_no: str) -> str:
+    url = (driver.current_url or "").strip()
+    if "/notice/-/detail/" in url:
+        return url
+    return f"https://ted.europa.eu/en/notice/-/detail/{ilan_no}"
+
+
 def ilan_verilerini_al(driver, ilan_no):
     log.bilgi("İlan verileri toplanıyor...")
     sayfayi_asagi_yukari_kaydir(driver)
+    driver.execute_script(ACCORDION_GENISLET_JS)
+    time.sleep(1.5)
+    driver.execute_script("window.scrollTo(0, document.documentElement.scrollHeight);")
+    time.sleep(0.5)
+    driver.execute_script(ACCORDION_GENISLET_JS)
+    time.sleep(0.5)
     veri = driver.execute_script(ILAN_VERISI_JS)
 
-    if not veri or (not veri.get("summary") and not veri.get("notice")):
+    ozet_eng = _footer_temizle(veri.get("summary", "") if veri else "")
+    notice_eng = _footer_temizle(veri.get("notice", "") if veri else "")
+    if not ozet_eng and not notice_eng:
         raise RuntimeError("İlan verisi bulunamadı.")
 
-    ozet = veri.get("summary", "")
-    ilan = veri.get("notice", "")
+    ozet_tr = ""
+    notice_tr = ""
+    cpv_tr = ""
 
-    log.bilgi(
-        "Metin Türkçe'ye çevriliyor... [bu işlem uzun sürebilir]",
-        vurgu="[bu işlem uzun sürebilir]",
-    )
-    try:
-        ozet = metni_turkceye_cevir(ozet) if ozet else ozet
-        ilan = metni_turkceye_cevir(ilan) if ilan else ilan
-    except CeviriBasarisizError as e:
-        raise RuntimeError(f"Çevirilemedi: {ilan_no}") from e
+    cpv_eng = (veri.get("cpvSatir") or "").strip() if veri else ""
+    if not cpv_eng and notice_eng:
+        cpv_eng = cpv_kaynak_satir_bul(notice_eng)
 
-    if not metin_turkce_mi(f"{ozet}\n{ilan}"):
-        raise RuntimeError(f"Çevirilemedi: {ilan_no}")
+    if ozet_eng:
+        log.bilgi(
+            "Özet metni Türkçe'ye çevriliyor... [bu işlem uzun sürebilir]",
+            vurgu="[bu işlem uzun sürebilir]",
+        )
+        try:
+            ozet_tr = metni_turkceye_cevir(ozet_eng)
+        except CeviriBasarisizError as e:
+            raise RuntimeError(f"Çevirilemedi: {ilan_no}") from e
+
+    if notice_eng:
+        log.bilgi(
+            "İlan (notice) metni Türkçe'ye çevriliyor... [bu işlem uzun sürebilir]",
+            vurgu="[bu işlem uzun sürebilir]",
+        )
+        try:
+            notice_tr = metni_turkceye_cevir(notice_eng)
+        except CeviriBasarisizError as e:
+            raise RuntimeError(f"Çevirilemedi: {ilan_no}") from e
+
+    if cpv_eng:
+        log.bilgi("CPV satırı Türkçe'ye çevriliyor...")
+        try:
+            cpv_tr = cpv_satirini_cevir(cpv_eng)
+        except CeviriBasarisizError as e:
+            raise RuntimeError(f"Çevirilemedi: {ilan_no}") from e
 
     log.basarili("Metin Türkçe'ye çevrildi.")
 
@@ -486,7 +595,8 @@ def ilan_verilerini_al(driver, ilan_no):
     docx_yolu = bugun_klasoru / f"{ilan_no}.docx"
 
     log.bilgi(f"Word formatına dönüştürülüyor: {ilan_no}")
-    docx_olustur(ozet, ilan, ilan_no, driver.current_url, docx_yolu)
+    ilan_url = _ilan_url_al(driver, ilan_no)
+    docx_olustur(ozet_tr, notice_tr, ilan_no, ilan_url, docx_yolu, cpv_satir=cpv_tr)
 
     log.basarili(f"Word kaydedildi: {docx_yolu}")
     return docx_yolu

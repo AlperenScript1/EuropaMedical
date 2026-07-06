@@ -48,7 +48,7 @@ def metin_turkce_mi(metin: str) -> bool:
     if has_tr_chars:
         if en_say >= 2 and en_say > tr_say:
             return False
-        return tr_say >= 1
+        return True
 
     if kiril_say > 0:
         return False

@@ -26,6 +26,39 @@ HARIC_TUTULACAKLAR = [
     r"^GA$|^HR$|^HU$|^IT$|^LT$|^LV$|^MT$|^NL$|^PL$|^PT$|^RO$|^SK$|^SL$|^SV$",
     r"^eTranslation",
     r"^Avrupa Komisyonu doğruluğu",
+    r"^This website is managed by",
+    r"^Publications Office of the European Union",
+    r"^Discover more on europa\.eu",
+    r"^Need help\?",
+    r"^Contact the EU$",
+    r"^Follow us$",
+    r"^Legal notice$",
+    r"^About TED$",
+    r"^Site map$",
+    r"^Other services$",
+    r"^Law \| Data \| Publications$",
+    r"^Help$",
+    r"^Contact the TED helpdesk$",
+    r"^Cookies$",
+    r"^Accessibility$",
+    r"^About us$",
+    r"^EU law$",
+    r"^European Data$",
+    r"^EU research results$",
+    r"^EU Whoiswho$",
+    r"^EU Publications$",
+    r"^Call us ",
+    r"^Use other telephone options$",
+    r"^Write to us via our contact form$",
+    r"^Meet us at one of the EU centres$",
+    r"^Search for EU social media channels$",
+    r"^Search all EU institutions and bodies$",
+    r"^LinkedIn$",
+    r"^Facebook$",
+    r"^YouTube$",
+    r"^Other$",
+    r"^Legal$",
+    r"^Social media$",
 ]
 
 FORM_TURLERI = {
@@ -158,6 +191,90 @@ def _alt_baslik_metni(form_turu: str, ihale_basligi: str) -> str:
     return ""
 
 
+_CPV_KAYNAK_RE = re.compile(
+    r"(Main|Additional)\s+classification\s*\(\s*cpv\s*\)\s*:\s*(\d{8,9})\s+(.+)",
+    re.IGNORECASE,
+)
+
+_CPV_TR_RE = re.compile(
+    r"(Ana|Ek)\s+sınıflandırma\s*\(\s*cpv\s*\)\s*:\s*(\d{8,9})\s+(.+)",
+    re.IGNORECASE,
+)
+
+
+def cpv_kaynak_satir_bul(metin: str) -> str:
+    """Notice metninden Main/Additional classification CPV satirini bulur."""
+    if not metin:
+        return ""
+    for ham in metin.splitlines():
+        satir = ham.strip()
+        match = _CPV_KAYNAK_RE.search(satir)
+        if match and match.group(1).lower() == "main":
+            tip, kod, aciklama = match.group(1), match.group(2), match.group(3).strip()
+            return f"{tip} classification (cpv): {kod} {aciklama}"
+    for ham in metin.splitlines():
+        satir = ham.strip()
+        match = _CPV_KAYNAK_RE.search(satir)
+        if match:
+            tip, kod, aciklama = match.group(1), match.group(2), match.group(3).strip()
+            return f"{tip} classification (cpv): {kod} {aciklama}"
+    match = _CPV_KAYNAK_RE.search(metin)
+    if match:
+        tip, kod, aciklama = match.group(1), match.group(2), match.group(3).strip()
+        return f"{tip} classification (cpv): {kod} {aciklama}"
+    return ""
+
+
+def cpv_satirini_formatla(metin: str) -> str:
+    """CPV satirini Word formatina cevirir."""
+    match = _CPV_KAYNAK_RE.search(metin)
+    if match:
+        tip, kod, aciklama = match.group(1), match.group(2), match.group(3).strip()
+        etiket = "Ana sınıflandırma" if tip.lower() == "main" else "Ek sınıflandırma"
+        return f"{etiket}(cpv: {kod}  {aciklama})"
+
+    match = _CPV_TR_RE.search(metin)
+    if match:
+        tip, kod, aciklama = match.group(1), match.group(2), match.group(3).strip()
+        return f"{tip} sınıflandırma(cpv: {kod}  {aciklama})"
+
+    return metin.strip()
+
+
+def cpv_satirini_cevir(cpv_eng: str) -> str:
+    """Notice'dan alinan tek CPV satirinin aciklamasini cevirir."""
+    from cevir import metni_turkceye_cevir
+
+    match = _CPV_KAYNAK_RE.search(cpv_eng)
+    if not match:
+        return cpv_satirini_formatla(metni_turkceye_cevir(cpv_eng))
+
+    tip, kod, aciklama = match.group(1), match.group(2), match.group(3).strip()
+    aciklama_tr = metni_turkceye_cevir(aciklama)
+    etiket = "Ana sınıflandırma" if tip.lower() == "main" else "Ek sınıflandırma"
+    return f"{etiket}(cpv: {kod}  {aciklama_tr})"
+
+
+def _sadece_cpv_notice_mi(notice: str) -> bool:
+    return bool(_CPV_KAYNAK_RE.search(notice) or _CPV_TR_RE.search(notice))
+
+
+def _govdeye_cpv_ekle(satirlar: list[str], cpv: str) -> list[str]:
+    if not cpv:
+        return satirlar
+    yeni: list[str] = []
+    eklendi = False
+    for satir in satirlar:
+        if _CPV_KAYNAK_RE.search(satir) or _CPV_TR_RE.search(satir):
+            yeni.append(cpv)
+            eklendi = True
+        else:
+            yeni.append(satir)
+    if not eklendi:
+        yeni.append(cpv)
+    return yeni
+
+
 def _ozet_satirlari(
     summary: str, notice: str, form_turu: str, ihale_basligi: str
 ) -> list[str]:
@@ -200,7 +317,7 @@ def _org_ve_bildirim_satirlari(notice: str) -> list[str]:
             mod = "degisim"
             degisim_satirlari.append(satir)
             continue
-        if satir.startswith("Bildirim bilgileri"):
+        if satir.startswith("Bildirim bilgileri") or satir.startswith("Notice information"):
             mod = "bildirim"
             bildirim_satirlari.append(satir)
             continue
@@ -208,17 +325,19 @@ def _org_ve_bildirim_satirlari(notice: str) -> list[str]:
             mod = "org"
             org_satirlari.append(satir)
             continue
-        if re.fullmatch(r"8\.\s*Kuruluşlar", satir):
+        if re.fullmatch(r"8\.\s*Kuruluşlar", satir) or re.fullmatch(
+            r"8\.\s*Organisations?", satir, re.IGNORECASE
+        ):
             mod = "org"
             continue
 
-        if mod == "degisim" and not satir.startswith(("8.", "Bildirim")):
+        if mod == "degisim" and not satir.startswith(("8.", "Bildirim", "Notice information")):
             if not _haric_mi(satir) and not re.fullmatch(r"\d+\.\s+[^:\.]+", satir):
                 degisim_satirlari.append(satir)
             continue
 
         if mod == "org":
-            if satir.startswith("Bildirim bilgileri"):
+            if satir.startswith("Bildirim bilgileri") or satir.startswith("Notice information"):
                 mod = "bildirim"
                 bildirim_satirlari.append(satir)
                 continue
@@ -381,7 +500,7 @@ def _tablo_cinsi_bul(summary: str, notice: str, ihale_basligi: str) -> str:
 
     metin = f"{summary}\n{notice}"
     for _, aciklama in re.findall(
-        r"(?:cpv\)|CPV\)|sınıflandırma\s*\(\s*cpv\s*\))\s*:\s*(\d{8})\s+(.+)",
+        r"(?:cpv\)|CPV\)|sınıflandırma\s*\(\s*cpv\s*\))\s*:\s*(\d{8,9})\s+(.+)",
         metin,
         re.IGNORECASE,
     ):
@@ -523,6 +642,18 @@ def _bos_satir_ekle(doc: Document):
     paragraf.alignment = WD_ALIGN_PARAGRAPH.LEFT
 
 
+def _ilan_linki_ekle(doc: Document, url: str) -> None:
+    """Verilerin alindigi TED ilan sayfasinin linkini belge sonuna yazar."""
+    url = (url or "").strip()
+    if not url:
+        return
+    _bos_satir_ekle(doc)
+    paragraf = doc.add_paragraph()
+    paragraf.style = doc.styles["Normal"]
+    paragraf.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    _run_ekle(paragraf, url)
+
+
 def _paragraf_ekle(doc: Document, satir: str, ortala: bool = False):
     paragraf = doc.add_paragraph()
     paragraf.style = doc.styles["Normal"]
@@ -619,18 +750,21 @@ def docx_olustur(
     ilan_no: str,
     url: str,
     cikti_yolu: Path,
+    cpv_satir: str = "",
 ) -> Path:
-    ulke = _ulke_bul(summary, notice)
-    form_turu = _form_turu_bul(summary, notice)
-    ihale_basligi = _ihale_basligi_bul(summary, notice)
+    ilan_metni = notice.strip() or summary.strip()
+    ulke = _ulke_bul(summary, ilan_metni)
+    form_turu = _form_turu_bul(summary, ilan_metni)
+    ihale_basligi = _ihale_basligi_bul(summary, ilan_metni)
     alt_baslik = _alt_baslik_metni(form_turu, ihale_basligi)
 
-    govde_satirlari = _ozet_satirlari(summary, notice, form_turu, ihale_basligi)
-    govde_satirlari.extend(_org_ve_bildirim_satirlari(notice))
-    if url:
-        govde_satirlari.append(url)
+    govde_satirlari = _ozet_satirlari(summary, ilan_metni, form_turu, ihale_basligi)
+    if notice.strip():
+        govde_satirlari.extend(_org_ve_bildirim_satirlari(ilan_metni))
+    if cpv_satir.strip():
+        govde_satirlari = _govdeye_cpv_ekle(govde_satirlari, cpv_satir.strip())
 
-    tablo_satirlari = _tablo_satirlari(summary, notice, ihale_basligi)
+    tablo_satirlari = _tablo_satirlari(summary, ilan_metni, ihale_basligi)
 
     doc = Document()
     _varsayilan_yazi_tipi_ayarla(doc)
@@ -647,6 +781,8 @@ def docx_olustur(
 
     if tablo_satirlari:
         _tablo_ekle(doc, tablo_satirlari)
+
+    _ilan_linki_ekle(doc, url)
 
     _makro1_doc_uygula(doc)
     doc.save(str(cikti_yolu))
