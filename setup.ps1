@@ -26,6 +26,75 @@ function Test-PythonExe {
     }
 }
 
+function Test-VenvModule {
+    param([string]$Path)
+    if (-not (Test-PythonExe $Path)) { return $false }
+    try {
+        $null = & $Path -c "import venv" 2>&1
+        return $LASTEXITCODE -eq 0
+    } catch {
+        return $false
+    }
+}
+
+function Configure-EmbeddedPython {
+    # Gomulu Python'da pip ve site-packages'i etkinlestir
+    $pthFile = Get-ChildItem -Path $EmbedDir -Filter "python*._pth" | Select-Object -First 1
+    if ($pthFile) {
+        $lines = Get-Content $pthFile.FullName
+        $newLines = @()
+        $hasSite = $false
+        $hasSitePackages = $false
+        foreach ($line in $lines) {
+            if ($line -match '^#\s*import site') {
+                $newLines += 'import site'
+                $hasSite = $true
+            } else {
+                $newLines += $line
+                if ($line -eq 'import site') { $hasSite = $true }
+                if ($line -eq 'Lib\site-packages') { $hasSitePackages = $true }
+            }
+        }
+        if (-not $hasSite) { $newLines += 'import site' }
+        if (-not $hasSitePackages) { $newLines += 'Lib\site-packages' }
+        Set-Content -Path $pthFile.FullName -Value $newLines -Encoding ASCII
+    }
+
+    $sitePackages = Join-Path $EmbedDir "Lib\site-packages"
+    if (-not (Test-Path $sitePackages)) {
+        New-Item -ItemType Directory -Path $sitePackages -Force | Out-Null
+    }
+
+    # pip yoksa kur
+    $pipOk = $false
+    try {
+        $null = & $EmbedPython -m pip --version 2>&1
+        $pipOk = $LASTEXITCODE -eq 0
+    } catch {}
+
+    if (-not $pipOk) {
+        Write-Info "pip kuruluyor..."
+        $getPip = Join-Path $env:TEMP "get-pip.py"
+        try {
+            Invoke-WebRequest -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile $getPip -UseBasicParsing
+            & $EmbedPython $getPip --no-warn-script-location 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "get-pip basarisiz" }
+        } catch {
+            Write-Err "pip kurulamadi: $($_.Exception.Message)"
+            exit 1
+        } finally {
+            Remove-Item $getPip -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    if (-not (Test-PythonExe $EmbedPython)) {
+        Write-Err "Gomulu Python calistirilamadi."
+        exit 1
+    }
+
+    return $EmbedPython
+}
+
 function Find-SystemPython {
     # py launcher (Windows)
     if (Get-Command py -ErrorAction SilentlyContinue) {
@@ -81,50 +150,7 @@ function Install-EmbeddedPython {
     Expand-Archive -Path $zipPath -DestinationPath $EmbedDir -Force
     Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
 
-    # Gomulu Python'da pip ve site-packages'i etkinlestir
-    $pthFile = Get-ChildItem -Path $EmbedDir -Filter "python*._pth" | Select-Object -First 1
-    if ($pthFile) {
-        $lines = Get-Content $pthFile.FullName
-        $newLines = @()
-        $hasSite = $false
-        $hasSitePackages = $false
-        foreach ($line in $lines) {
-            if ($line -match '^#\s*import site') {
-                $newLines += 'import site'
-                $hasSite = $true
-            } else {
-                $newLines += $line
-                if ($line -eq 'import site') { $hasSite = $true }
-                if ($line -eq 'Lib\site-packages') { $hasSitePackages = $true }
-            }
-        }
-        if (-not $hasSite) { $newLines += 'import site' }
-        if (-not $hasSitePackages) { $newLines += 'Lib\site-packages' }
-        Set-Content -Path $pthFile.FullName -Value $newLines -Encoding ASCII
-    }
-
-    $sitePackages = Join-Path $EmbedDir "Lib\site-packages"
-    if (-not (Test-Path $sitePackages)) {
-        New-Item -ItemType Directory -Path $sitePackages -Force | Out-Null
-    }
-
-    # pip kur
-    $getPip = Join-Path $env:TEMP "get-pip.py"
-    try {
-        Invoke-WebRequest -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile $getPip -UseBasicParsing
-        & $EmbedPython $getPip --no-warn-script-location 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "get-pip basarisiz" }
-    } catch {
-        Write-Err "pip kurulamadi: $($_.Exception.Message)"
-        exit 1
-    } finally {
-        Remove-Item $getPip -Force -ErrorAction SilentlyContinue
-    }
-
-    if (-not (Test-PythonExe $EmbedPython)) {
-        Write-Err "Indirilen Python calistirilamadi."
-        exit 1
-    }
+    Configure-EmbeddedPython | Out-Null
 
     Write-Ok "Python basariyla indirildi."
     return $EmbedPython
@@ -137,6 +163,11 @@ function Ensure-Venv {
         return $VenvPython
     }
 
+    if (-not (Test-VenvModule $BasePython)) {
+        Write-Err "Bu Python surumu venv modulunu desteklemiyor."
+        exit 1
+    }
+
     Write-Info "Sanal ortam olusturuluyor (.venv)..."
     $venvDir = Join-Path $Root ".venv"
 
@@ -146,7 +177,7 @@ function Ensure-Venv {
 
     & $BasePython -m venv $venvDir 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) {
-        Write-Err "Sanal ortam olusturulamadi. Python surumunuz venv desteklemiyor olabilir."
+        Write-Err "Sanal ortam olusturulamadi."
         exit 1
     }
 
@@ -157,6 +188,35 @@ function Ensure-Venv {
 
     Write-Ok "Sanal ortam hazir."
     return $VenvPython
+}
+
+function Resolve-Python {
+    if (Test-PythonExe $VenvPython) {
+        Write-Ok "Mevcut sanal ortam bulundu."
+        return $VenvPython
+    }
+
+    $systemPython = Find-SystemPython
+    if ($systemPython) {
+        Write-Ok "Sistem Python'u bulundu: $systemPython"
+        return (Ensure-Venv $systemPython)
+    }
+
+    if (Test-PythonExe $EmbedPython) {
+        Write-Ok "Proje icindeki Python bulundu."
+        if (Test-VenvModule $EmbedPython) {
+            return (Ensure-Venv $EmbedPython)
+        }
+        Write-Info "Gomulu Python kullaniliyor (venv yok, paketler dogrudan kurulacak)..."
+        return (Configure-EmbeddedPython)
+    }
+
+    $embedPy = Install-EmbeddedPython
+    if (Test-VenvModule $embedPy) {
+        return (Ensure-Venv $embedPy)
+    }
+    Write-Info "Gomulu Python kullaniliyor (venv yok, paketler dogrudan kurulacak)..."
+    return $embedPy
 }
 
 function Install-Requirements {
@@ -183,26 +243,13 @@ Write-Host ""
 Write-Host "=== Europa Medical - Kurulum Kontrolu ===" -ForegroundColor White
 Write-Host ""
 
-$pythonToUse = $null
-
-if (Test-PythonExe $VenvPython) {
-    Write-Ok "Mevcut sanal ortam bulundu."
-    $pythonToUse = $VenvPython
-} else {
-    $systemPython = Find-SystemPython
-    if ($systemPython) {
-        Write-Ok "Sistem Python'u bulundu: $systemPython"
-        $pythonToUse = Ensure-Venv $systemPython
-    } elseif (Test-PythonExe $EmbedPython) {
-        Write-Ok "Proje icindeki Python bulundu."
-        $pythonToUse = Ensure-Venv $EmbedPython
-    } else {
-        $embedPy = Install-EmbeddedPython
-        $pythonToUse = Ensure-Venv $embedPy
-    }
-}
+$pythonToUse = Resolve-Python
 
 Install-Requirements $pythonToUse
+
+# calistir.bat hangi Python'u kullanacagini bilsin
+$launcherHint = Join-Path $Root ".python-path"
+Set-Content -Path $launcherHint -Value $pythonToUse -Encoding ASCII -NoNewline
 
 Write-Host ""
 Write-Ok "Kurulum tamam. Uygulama baslatiliyor..."
