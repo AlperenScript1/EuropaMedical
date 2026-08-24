@@ -1,0 +1,5 @@
+selenium
+pyautogui
+python-docx
+colorama
+deep-translator
