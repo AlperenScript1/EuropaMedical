@@ -14,6 +14,18 @@ PARCA_ARASI_BEKLEME_SN = 0.4
 # çeviri isteklerini sırayla gönder.
 PARCA_PARALEL_ISCI = 1
 
+GECERSIZ_CEVIRI_YANITLARI = (
+    "error 500",
+    "server error",
+    "that's an error",
+    "there was an error",
+    "too many requests",
+    "rate limit",
+    "unusual traffic",
+    "captcha",
+    "access denied",
+)
+
 CUMLE_AYIRICI = re.compile(r"(?<=[.!?;])\s+")
 
 TURKCE_ISARETLER = [
@@ -33,6 +45,11 @@ KIRIL_PATTERN = re.compile(r"[а-яА-ЯёЁ]")
 
 class CeviriBasarisizError(Exception):
     """Metin yeterince Türkçe'ye çevrilemedi."""
+
+
+def _gecersiz_ceviri_yaniti_mi(metin: str) -> bool:
+    temiz_metin = re.sub(r"\s+", " ", (metin or "")).casefold()
+    return any(isaret in temiz_metin for isaret in GECERSIZ_CEVIRI_YANITLARI)
 
 
 def metin_turkce_mi(metin: str) -> bool:
@@ -146,8 +163,11 @@ def _parca_cevir(cevirici: GoogleTranslator, parca: str) -> str:
         try:
             sonuc = cevirici.translate(parca)
             if sonuc and sonuc.strip():
-                return sonuc
-            son_hata = CeviriBasarisizError("Boş çeviri sonucu")
+                if not _gecersiz_ceviri_yaniti_mi(sonuc):
+                    return sonuc
+                son_hata = CeviriBasarisizError("Çeviri servisi hata yanıtı verdi")
+            else:
+                son_hata = CeviriBasarisizError("Boş çeviri sonucu")
         except (RequestError, TranslationNotFound, Exception) as e:
             son_hata = e
         if deneme < CEVIRI_DENEME:
