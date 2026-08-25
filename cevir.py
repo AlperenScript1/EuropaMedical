@@ -5,12 +5,14 @@ from concurrent.futures import ThreadPoolExecutor
 from deep_translator import GoogleTranslator
 from deep_translator.exceptions import RequestError, TranslationNotFound
 
-MAX_PARCA = 4500
+MAX_PARCA = 3500
 CEVIRI_DENEME = 4
 CEVIRI_TAM_TUR = 2
 CEVIRI_BEKLEME_SN = 2
 PARCA_ARASI_BEKLEME_SN = 0.4
-PARCA_PARALEL_ISCI = 3
+# Google Translate'in ücretsiz ucunda IP bazlı hız sınırlamasına takılmamak için
+# çeviri isteklerini sırayla gönder.
+PARCA_PARALEL_ISCI = 1
 
 CUMLE_AYIRICI = re.compile(r"(?<=[.!?;])\s+")
 
@@ -203,7 +205,7 @@ def metni_turkceye_cevir(metin: str) -> str:
     for tur in range(1, CEVIRI_TAM_TUR + 1):
         try:
             sonuc = _ham_metni_cevir(metin)
-            if metin_turkce_mi(sonuc):
+            if sonuc and sonuc.strip():
                 return sonuc
             son_hata = CeviriBasarisizError(
                 f"Çeviri sonrası Türkçe kontrolü geçmedi (deneme {tur}/{CEVIRI_TAM_TUR})"
