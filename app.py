@@ -493,11 +493,17 @@ def sinyalleri_ayarla():
 def tarayici_baslat():
     """Chrome burada açılır: webdriver.Chrome(...) satırı tarayıcıyı başlatır."""
     options = Options()
+    # TED'in ikincil kaynaklari bazen tamamlanmadiginda ChromeDriver varsayilan
+    # olarak tum sayfayi bekler ve localhost baglantisinda 120 sn. zaman asimina
+    # dusur. Temel DOM yuklenince devam etmek, asagidaki WebDriverWait
+    # kontrolleriyle birlikte guvenli ve daha dayaniklidir.
+    options.page_load_strategy = "eager"
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_argument("--lang=tr-TR")
     options.add_argument("--disable-logging")
     options.add_argument("--log-level=3")
     options.add_argument("--disable-background-networking")
+    options.add_argument("--disable-extensions")
     options.add_experimental_option("excludeSwitches", ["enable-logging"])
 
     if ARKA_PLAN:
@@ -513,6 +519,13 @@ def tarayici_baslat():
     # --- CHROME AÇILIYOR ---
     service = Service(log_path=os.devnull)
     driver = webdriver.Chrome(service=service, options=options)
+    # Takilan bir sayfa ya da JavaScript komutu icin varsayilan 120 saniye
+    # beklemek yerine kontrollu bir zaman asimi uygula.
+    # TED yogun veya yavas oldugunda sayfanin yuklenmesi icin yeterli pay birak.
+    # Bu sinirlar, ChromeDriver'in yanit vermedigi durumlarda yine sonsuza kadar
+    # beklenmesini onler.
+    driver.set_page_load_timeout(90)
+    driver.set_script_timeout(60)
     servis = getattr(driver, "service", None)
     if servis and servis.process and servis.process.pid:
         _process_joba_ekle(servis.process.pid)
@@ -643,7 +656,7 @@ def sonuclara_don(driver, son_ilan_no: str | None = None) -> bool:
             else:
                 driver.back()
 
-            WebDriverWait(driver, 20).until(
+            WebDriverWait(driver, 45).until(
                 lambda d: "search/result" in d.current_url
             )
             sonuc_tablosu_bekle(driver)
@@ -660,7 +673,7 @@ def sonuclara_don(driver, son_ilan_no: str | None = None) -> bool:
 
     if son_ilan_no:
         try:
-            ilan_linki = WebDriverWait(driver, 10).until(
+            ilan_linki = WebDriverWait(driver, 30).until(
                 EC.presence_of_element_located(
                     (By.XPATH, f"//table//tr[td]//a[normalize-space()='{son_ilan_no}']")
                 )
@@ -680,7 +693,7 @@ def sonuclara_don(driver, son_ilan_no: str | None = None) -> bool:
 
 
 def sonuc_tablosu_bekle(driver):
-    WebDriverWait(driver, 15).until(
+    WebDriverWait(driver, 45).until(
         EC.presence_of_element_located((By.XPATH, "//table//tr[td]"))
     )
     time.sleep(1)
@@ -693,7 +706,7 @@ def sonraki_sayfaya_gec(driver, sayfa_no: int) -> bool:
     )
     log.bilgi(f"Sayfa {sayfa_no}'ye geçiliyor...")
     try:
-        buton = WebDriverWait(driver, 5).until(
+        buton = WebDriverWait(driver, 15).until(
             EC.element_to_be_clickable((By.XPATH, xpath))
         )
     except TimeoutException:
@@ -774,7 +787,7 @@ def sonraki_medical_ilan_bul(driver, atlanan_ilanlar, bugun_tarihi: str):
 
 def ilana_git(driver, ilan_no):
     log.bilgi(f"İlan detayına giriliyor: {ilan_no}")
-    ilan_linki = WebDriverWait(driver, 10).until(
+    ilan_linki = WebDriverWait(driver, 30).until(
         EC.presence_of_element_located(
             (By.XPATH, f"//table//tr[td]//a[normalize-space()='{ilan_no}']")
         )
@@ -783,7 +796,7 @@ def ilana_git(driver, ilan_no):
         "arguments[0].scrollIntoView({block: 'center'}); arguments[0].click();",
         ilan_linki,
     )
-    WebDriverWait(driver, 15).until(lambda d: "/notice/-/detail/" in d.current_url)
+    WebDriverWait(driver, 45).until(lambda d: "/notice/-/detail/" in d.current_url)
     log.basarili(f"İlan detay sayfası açıldı: {ilan_no}")
 
 
@@ -810,19 +823,19 @@ def main():
         _driver.get(url)
 
         log.bilgi("Medical aranıyor...")
-        arama_kutusu = WebDriverWait(_driver, 10).until(
+        arama_kutusu = WebDriverWait(_driver, 30).until(
             EC.element_to_be_clickable((By.XPATH, "//input[@id='ted-search-input-text']"))
         )
         arama_kutusu.click()
         arama_kutusu.send_keys("medical")
 
-        ara_butonu = WebDriverWait(_driver, 10).until(
+        ara_butonu = WebDriverWait(_driver, 30).until(
             EC.element_to_be_clickable((By.XPATH, "(//button[@id='ted-search-submit'])[1]"))
         )
         ara_butonu.click()
         log.bilgi("Arama sonuçları bekleniyor...")
 
-        WebDriverWait(_driver, 15).until(lambda d: "search/result" in d.current_url)
+        WebDriverWait(_driver, 45).until(lambda d: "search/result" in d.current_url)
         _arama_sonuc_url = _driver.current_url
         log.bilgi("Sonuçlar yüklendi, medical ilanlar taranıyor...")
         sonuc_tablosu_bekle(_driver)
